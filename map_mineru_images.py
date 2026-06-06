@@ -230,7 +230,7 @@ def build_image_map(content_list_path):
         "# minerU Image → Figure Mapping (bbox-based)",
         "# Full-width items (tables) are standalone",
         "# Composite figures get (a), (b), ... by reading order",
-        "# Format: <filename>  →  <label>  (page <N>)",
+        "# Format: <filename>  →  <label>  (page <N>, 1-based)",
         "",
     ]
 
@@ -240,7 +240,7 @@ def build_image_map(content_list_path):
         for img_path, bbox, sub_letter in sub_items:
             fname = os.path.basename(img_path)
             label = f"{fig_label}({sub_letter})" if sub_letter else fig_label
-            lines.append(f"{fname}  →  {label}  (page {page_idx})")
+            lines.append(f"{fname}  →  {label}  (page {page_idx + 1})")
 
     output = "\n".join(lines) + "\n"
     return output, image_groups
