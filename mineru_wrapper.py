@@ -108,69 +108,65 @@ def generate_image_map(parsed_name: str, parsed_dir: Path) -> dict:
     }
 
 
-def standardize_output(name: str, raw_parent: Path, target_dir: Path) -> Path:
-    """Clean up minerU output: remove junk files, move to target directory.
+def standardize_output(name: str, raw_parent: Path, target_dir: Path) -> Path | None:
+    """Move minerU output from raw_parent/<name>/auto/ to target_dir/<name>/.
 
-    minerU outputs to: raw_parent/<name>/auto/...
-    Standardized to:   target_dir/<name>/paper.md + images/ + image-map.txt
+    minerU writes <name>/auto/<name>.md + images/ + image-map.txt + a pile
+    of auxiliary _layout.pdf / _middle.json / _model.json / _origin.pdf /
+    _span.pdf / _content_list*.json files. This function:
 
-    Args:
-        name: paper identifier (same as minerU output dir).
-        raw_parent: directory containing the minerU output (<name>/auto/).
-        target_dir: root for standardized output (target_dir/<name>/).
+      * renames <name>.md → paper.md
+      * moves images/ and image-map.txt up one level into target_dir/<name>/
+      * rmtree's the entire auto/ directory (everything left is junk)
+      * removes the raw_parent/<name>/ wrapper if it differs from
+        target_dir/<name>/ and is now empty (single mode cleanup)
 
-    Returns path to standardized paper.md.
+    Single mode: raw_parent ≠ target_dir → raw wrapper gets removed.
+    Batch mode:  raw_parent == target_dir → paper_dir is the raw wrapper,
+                 so the final rmdir is skipped.
+
+    Returns the final paper.md path, or None if minerU produced no output.
     """
     auto_dir = raw_parent / name / "auto"
     if not auto_dir.is_dir():
-        return None  # minerU produced no output for this paper
+        return None
     paper_dir = target_dir / name
     paper_dir.mkdir(parents=True, exist_ok=True)
 
-    # Move paper.md (rename <name>.md → paper.md)
-    md_files = sorted(auto_dir.glob("*.md"))
-    md_file = next((m for m in md_files if m.name != "image-map.txt"), None)
-    if md_file and md_file.exists():
-        shutil.copy2(str(md_file), str(paper_dir / "paper.md"))
+    # 1. Move the markdown (renamed to paper.md). minerU produces a single
+    # <name>.md; glob+first-hit guards against future variants.
+    md_src = next(iter(auto_dir.glob("*.md")), None)
+    if md_src is not None:
+        md_dst = paper_dir / "paper.md"
+        md_dst.unlink(missing_ok=True)
+        shutil.move(str(md_src), str(md_dst))
 
-    # Move images/
+    # 2. Move images/ (replace any existing copy).
     src_images = auto_dir / "images"
-    dst_images = paper_dir / "images"
     if src_images.is_dir():
+        dst_images = paper_dir / "images"
         if dst_images.exists():
             shutil.rmtree(str(dst_images))
         shutil.move(str(src_images), str(dst_images))
 
-    # Move image-map.txt if present
+    # 3. Move image-map.txt (generated earlier by map_mineru_images.py).
     src_map = auto_dir / "image-map.txt"
-    dst_map = paper_dir / "image-map.txt"
     if src_map.exists():
-        shutil.copy2(str(src_map), str(dst_map))
+        dst_map = paper_dir / "image-map.txt"
+        dst_map.unlink(missing_ok=True)
+        shutil.move(str(src_map), str(dst_map))
 
-    # Remove minerU auxiliary files and the empty auto dir
-    for f in auto_dir.iterdir():
-        if f.is_file() and f.suffix in (".pdf", ".json"):
-            f.unlink(missing_ok=True)
-    # Clean up auto/ directory
-    remaining = list(auto_dir.iterdir())
-    if not remaining:
-        auto_dir.rmdir()
-    else:
-        # auto_dir still has files (e.g., .md was copied, not moved)
-        # Only delete auto/ contents, keep parent if same as target
-        for f in remaining:
-            if f.is_file():
-                f.unlink()
-            elif f.is_dir() and f.name != "images":
-                shutil.rmtree(str(f))
-    # Remove empty parent if it's NOT the same as target (single mode cleanup)
-    parent_dir = auto_dir.parent
-    if parent_dir.is_dir() and not list(parent_dir.iterdir()):
-        raw_root = raw_parent / name
-        target_root = target_dir / name
-        if raw_root != target_root:
-            parent_dir.rmdir()
+    # 4. Everything still in auto/ is minerU auxiliary output — drop it.
+    shutil.rmtree(str(auto_dir), ignore_errors=True)
+
+    # 5. Single mode: remove the now-empty raw wrapper. Batch mode skips
+    # this because raw_root and paper_dir are the same directory.
+    raw_root = raw_parent / name
+    if raw_root != paper_dir and raw_root.is_dir() and not any(raw_root.iterdir()):
+        raw_root.rmdir()
+
     return paper_dir / "paper.md"
+
 
 # ---------------------------------------------------------------------------
 # Single-paper mode
