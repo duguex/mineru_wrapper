@@ -160,8 +160,6 @@ def build_image_map(content_list_path):
         # Otherwise: each captioned item is its own figure
         # Uncptioned items with no caption: group among themselves
 
-        processed = set()
-
         if len(captioned) == 1 and uncaptioned:
             # One figure with multiple subfigures
             fig_label = captioned[0][1]
@@ -181,8 +179,6 @@ def build_image_map(content_list_path):
                         if key not in image_groups:
                             image_groups[key] = ([], main_cap)
                         image_groups[key][0].append((img_path, bbox, sub_label))
-            for it in combined:
-                processed.add(it[0])
 
         elif len(captioned) >= 2:
             # Multiple figures on the page — each captioned item is standalone
@@ -191,7 +187,6 @@ def build_image_map(content_list_path):
                 if key not in image_groups:
                     image_groups[key] = ([], cap)
                 image_groups[key][0].append((img_path, bbox, ""))
-                processed.add(img_path)
 
         elif captioned and not uncaptioned:
             # All items are caption-bearing — each standalone
@@ -200,7 +195,6 @@ def build_image_map(content_list_path):
                 if key not in image_groups:
                     image_groups[key] = ([], cap)
                 image_groups[key][0].append((img_path, bbox, ""))
-                processed.add(img_path)
 
         elif not captioned:
             # No captions — group remaining items

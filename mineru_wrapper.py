@@ -112,26 +112,6 @@ def generate_image_map(parsed_name: str, parsed_dir: Path) -> dict:
     }
 
 
-def verify_parse(parsed_dir: Path) -> dict:
-    """Check whether a parsed paper has the expected outputs.
-
-    Returns dict with success, paper_md, images_dir, image_map.
-    """
-    auto = parsed_dir / "auto"
-    md_files = sorted(auto.glob("*.md"))
-    md_file = next((m for m in md_files if m.name != "image-map.txt"), None)
-    images_dir = auto / "images"
-    image_map = auto / "image-map.txt"
-
-    if not md_file or not md_file.exists():
-        return {"success": False, "error": f"No .md output found in {auto}"}
-    return {
-        "success": True,
-        "error": None,
-        "paper_md": str(md_file),
-        "images_dir": str(images_dir) if images_dir.is_dir() else None,
-        "image_map": str(image_map) if image_map.exists() else None,
-    }
 def standardize_output(name: str, raw_parent: Path, target_dir: Path) -> Path:
     """Clean up minerU output: remove junk files, move to target directory.
 
