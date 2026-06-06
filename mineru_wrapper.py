@@ -175,24 +175,38 @@ def standardize_output(name: str, raw_parent: Path, target_dir: Path) -> Path | 
 def parse_single(pdf_path: Path, output_dir: Path):
     """Parse a single PDF, standardize output, generate image map."""
     name = derive_name(str(pdf_path))
-    raw_dir = output_dir / name  # minerU raw output (will be cleaned up)
-    raw_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Parsing {pdf_path} ...")
     t0 = time.time()
 
-    success = run_mineru(pdf_path, output_dir)
-    if not success:
-        print("  minerU failed", file=sys.stderr)
+    # Stage the PDF under our derived name so minerU's output dir matches
+    # what generate_image_map / standardize_output expect. Without this,
+    # minerU uses the raw PDF stem (with dashes, dots, etc.) and the
+    # follow-up steps look in the wrong directory.
+    with tempfile.TemporaryDirectory(prefix="mineru_single_") as tmpdir:
+        staged = Path(tmpdir) / f"{name}.pdf"
+        os.symlink(pdf_path.resolve(), staged)
+
+        success = run_mineru(staged, output_dir)
+        if not success:
+            print("  minerU failed", file=sys.stderr)
+            sys.exit(1)
+
+        # Image mapping (runs from raw minerU output before cleanup)
+        raw_dir = output_dir / name
+        img_result = generate_image_map(name, raw_dir)
+        if not img_result["success"]:
+            print(f"  image map failed: {img_result.get('error', 'unknown')}",
+                  file=sys.stderr)
+
+        # Standardize: clean up minerU trash, move to parsed/<name>/
+        paper_md = standardize_output(name, output_dir, output_dir / "parsed")
+
+    if paper_md is None:
+        print(f"  standardize failed: no minerU output dir at "
+              f"{output_dir / name}/auto", file=sys.stderr)
         sys.exit(1)
 
-    # Image mapping (runs from raw minerU output before cleanup)
-    img_result = generate_image_map(name, raw_dir)
-    if not img_result["success"]:
-        print(f"  image map failed: {img_result.get('error', 'unknown')}", file=sys.stderr)
-
-    # Standardize: clean up minerU trash, move to parsed/<name>/
-    paper_md = standardize_output(name, output_dir, output_dir / "parsed")
     std_dir = paper_md.parent  # output/parsed/<name>/
     images_dir = std_dir / "images"
     image_map = std_dir / "image-map.txt"
