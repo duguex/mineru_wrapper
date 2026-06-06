@@ -175,15 +175,25 @@ def standardize_output(name: str, raw_parent: Path, target_dir: Path) -> Path:
     for f in auto_dir.iterdir():
         if f.is_file() and f.suffix in (".pdf", ".json"):
             f.unlink(missing_ok=True)
+    # Clean up auto/ directory
     remaining = list(auto_dir.iterdir())
     if not remaining:
         auto_dir.rmdir()
-        parent_dir = auto_dir.parent
-        if parent_dir.is_dir() and not list(parent_dir.iterdir()):
-            parent_dir.rmdir()
     else:
-        shutil.rmtree(str(raw_parent / name))
-
+        # auto_dir still has files (e.g., .md was copied, not moved)
+        # Only delete auto/ contents, keep parent if same as target
+        for f in remaining:
+            if f.is_file():
+                f.unlink()
+            elif f.is_dir() and f.name != "images":
+                shutil.rmtree(str(f))
+    # Remove empty parent if it's NOT the same as target (single mode cleanup)
+    parent_dir = auto_dir.parent
+    if parent_dir.is_dir() and not list(parent_dir.iterdir()):
+        raw_root = raw_parent / name
+        target_root = target_dir / name
+        if raw_root != target_root:
+            parent_dir.rmdir()
     return paper_dir / "paper.md"
 
 # ---------------------------------------------------------------------------
