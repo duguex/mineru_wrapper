@@ -45,7 +45,7 @@ Two scripts with a one-way dependency: `mineru_wrapper.py` calls `map_mineru_ima
 5. **Post-processing** — for each paper: `generate_image_map` (subprocess to `map_mineru_images.py`) then `standardize_output`.
 6. **Manifest** — always written to `<output>/parsed/manifest.json` with per-paper `{name, pdf_path, paper_md, status}`.
 
-**`standardize_output(name, raw_parent, target_dir)`** moves minerU's `raw_parent/<name>/auto/{<name>.md, images/, image-map.txt, junk}` to `target_dir/<name>/{paper.md, images/, image-map.txt}`, `rmtree`s `auto/` whole (everything still in there is minerU auxiliary output), and removes the raw wrapper dir only when it differs from `paper_dir`. Same logic handles both the single-PDF layout (raw_parent ≠ target_dir) and batch layout (raw_parent == target_dir).
+**`standardize_output(name, raw_parent, target_dir)`** moves minerU's `raw_parent/<name>/auto/{<name>.md, images/, image-map.txt, junk}` to `target_dir/<name>/{paper.md, images/, image-map.txt}`, `rmtree`s `auto/` whole (everything still in there is minerU auxiliary output), and removes the raw wrapper dir only when it differs from `paper_dir`. Same logic handles both single-PDF layout (raw_parent ≠ target_dir) and batch layout (raw_parent == target_dir). It does **not** filter `images/` — every JPG minerU extracted is preserved, even if it's a formula rendering not referenced in paper.md (an earlier filter was reverted in commit `aa94e06` after it mistakenly dropped a real figure).
 
 `derive_name` (filename → clean alphanumeric key) is the one small utility worth knowing; shell command strings use stdlib `shlex.quote`.
 
@@ -53,18 +53,20 @@ Two scripts with a one-way dependency: `mineru_wrapper.py` calls `map_mineru_ima
 
 Algorithm:
 - Scans `paper.md` for `![](images/<hash>.jpg)` references in document order.
-- For each, looks 400 chars ahead for `FIG. N` / `TABLE N` caption text.
-- Consecutive images with the same base label get incremental sub-labels (a), (b), (c), … — handles minerU's subfigure splitting.
-- Images without a detectable label in the surrounding text are marked as `FIG. ??(label)` — these are real figures that minerU extracted but never embedded in the markdown.
-- Images not referenced in `paper.md` at all are left in `images/` but not mapped. These are typically formula/equation renderings (already represented as LaTeX in paper.md) or OCR table fallbacks.
+- For each, looks 400 chars ahead for `FIG. N` / `TABLE N` caption text. When both patterns match in the window, the **earliest** one wins — avoids confusing a "see Table I" mid-paragraph reference with the real Figure caption that opens it.
+- `TABLE` accepts both arabic (`Table 3`) and roman (`TABLE IV`) numbering. Phys Rev classics need the latter.
+- Images without a detectable caption inherit the previous figure's base label — they join the right group as `(b)`, `(c)`, … instead of being dumped into a separate bucket.
+- After every ref has a base label, consecutive items sharing one are grouped: a run of ≥2 becomes `(a)`, `(b)`, `(c)` …; singletons keep the bare base label (no `(a)`).
+- Refs that appear before any caption at all (rare) fall back to `FIG. ??`.
+- Images extracted by minerU but never embedded in `paper.md` (typically formula/equation renderings already represented as LaTeX) are not entered into `image-map.txt` but **are not deleted** — they remain in `images/` as a side-channel.
 
-**Known limitation:** The mapper is 100% accurate for images present in paper.md. Some papers (e.g. Hu_2025, Grzybowski_2000) have many extracted images that minerU never placed in the markdown — these are real figures missed by minerU, not by the mapper. They remain accessible in `images/` but lack a label in `image-map.txt`.
+**Known limitation:** Coverage equals what minerU embeds in `paper.md`. Equation-heavy papers (e.g. Grzybowski 2000) yield 0 entries in `image-map.txt` because all 36 extracted JPGs were formula renderings minerU did not embed. The files still sit in `images/`; if downstream consumers iterate the directory rather than the map, they'll see the noise. A previous orphan filter (commit `bfb4732`) was reverted in `aa94e06` because it removed a real figure misclassified as orphan; the underlying `extract_base` priority bug is now fixed by commit `504c915` (earliest-match-wins), so re-enabling the filter is safe to revisit.
 
 ## Vision model
 
 A local vision model is deployed at `192.168.1.130:8001` (llama.cpp server, Qwen3.6, multimodal). It is configured in `~/.omp/agent/config.yml` as `vision` and `designer` roles.
 
-**Purpose:** Verify and fill in `FIG.??` labels that the text-based mapper cannot resolve. The vision model can look at an image and determine whether it's a FIGURE, TABLE, FORMULA, or SUBFIGURE.
+**Purpose:** Spot-check ambiguous labels and resolve the rare `FIG. ??` case (refs that appear before any caption in paper.md). The vision model can look at an image and determine whether it's a FIGURE, TABLE, FORMULA, or SUBFIGURE.
 
 **Usage via curl** (for batch inspection):
 ```bash
@@ -119,7 +121,7 @@ def make(parent, name):
     auto = parent / name / "auto"
     auto.mkdir(parents=True)
     (auto / f"{name}.md").write_text("# Mock\n")
-    (auto / "image-map.txt").write_text("abc.jpg → FIG. 1 (page 1)\n")
+    (auto / "image-map.txt").write_text("abc.jpg  →  FIG. 1\n")
     for suffix in ("_layout.pdf", "_origin.pdf", "_span.pdf",
                    "_middle.json", "_model.json", "_content_list_v2.json"):
         (auto / f"{name}{suffix}").write_bytes(b"junk")
