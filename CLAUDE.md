@@ -37,7 +37,7 @@ Two scripts with a clear one-way dependency: `mineru_wrapper.py` calls `map_mine
 2. **Output standardization** (`standardize_output`) — minerU emits `<name>/auto/{*.md, *.pdf, *.json, images/}`. The wrapper renames `<name>.md` → `paper.md`, moves `images/` and `image-map.txt` up one level, then deletes the auxiliary `_layout.pdf` / `_middle.json` / `_model.json` / `_origin.pdf` / `_span.pdf` files and the empty `auto/` / `<name>/` parents.
 3. **Modes** — `parse_single` (one PDF, raw output → `parsed/<name>/`) and `parse_batch` (staging dir of symlinks under a `tempfile.mkdtemp`, minerU native batch mode, retry-the-failed loop on partial failure, writes `manifest.json`).
 
-`derive_name` (filename → clean alphanumeric key) and `shlex_quote` (single-quote escaping for the `bash -c` command string) are the two small utilities worth knowing.
+`derive_name` (filename → clean alphanumeric key) is the one small utility worth knowing; shell command strings use stdlib `shlex.quote`.
 
 **`map_mineru_images.py`** — pure function `build_image_map(path) -> (text, groups)`. Consumes minerU's `content_list_v2.json` and produces `image-map.txt` (one line per image: `<hash>.jpg  →  FIG. 1(a)  (page 3)`). The grouping heuristic:
 - Full-width items (bbox x2-x0 > 60% of page max x) are standalone (typically tables).

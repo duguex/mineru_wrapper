@@ -16,6 +16,7 @@ Logs: ~/logs/mineru/run_<timestamp>.log (full stdout + stderr per run)
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -42,11 +43,6 @@ def derive_name(pdf_path: str) -> str:
     return name if name else "unnamed"
 
 
-def shlex_quote(s: str) -> str:
-    """Minimal shell quoting — wrap in single quotes, handle embedded quotes."""
-    return "'" + s.replace("'", "'\\''") + "'"
-
-
 def mineru_available() -> bool:
     """Check whether the minerU conda env exists."""
     result = subprocess.run(
@@ -65,11 +61,11 @@ def run_mineru(input_path: Path, output_dir: Path) -> bool:
     env_script = os.path.expanduser("~/mineru-rocm/mineru-rocm-env.sh")
     cmd = (
         f"export MINERU_API_MAX_CONCURRENT_REQUESTS=1 && "
-        f"source {shlex_quote(env_script)} && "
+        f"source {shlex.quote(env_script)} && "
         f"export HIP_VISIBLE_DEVICES=1 && "
         f"export PATH=/opt/conda/bin:$PATH && "
-        f"conda run -n torch_rocm72 mineru -p {shlex_quote(str(input_path))} "
-        f"-o {shlex_quote(str(output_dir))} -b pipeline -m auto -l en"
+        f"conda run -n torch_rocm72 mineru -p {shlex.quote(str(input_path))} "
+        f"-o {shlex.quote(str(output_dir))} -b pipeline -m auto -l en"
     )
 
     print(f"  Log: {log_path}")
