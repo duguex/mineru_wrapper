@@ -11,11 +11,15 @@ Single command for PDF parsing with ROCm GPU setup, image mapping, and output st
 ## Usage
 
 ```bash
-# Single PDF — output to parsed/<name>/
-python3 /home/duguex/scripts/mineru_wrapper.py --single paper.pdf [output_dir]
+# Parse a single PDF
+python3 /home/duguex/scripts/mineru_wrapper.py paper.pdf [output_dir]
 
-# Batch directory — creates parsed/manifest.json + parsed/<name>/ per paper
-python3 /home/duguex/scripts/mineru_wrapper.py --batch pdf_dir/ [--force]
+# Parse all PDFs in a directory (or mix files + dirs)
+python3 /home/duguex/scripts/mineru_wrapper.py pdf_dir/
+python3 /home/duguex/scripts/mineru_wrapper.py pdf_dir/ extra.pdf
+
+# Re-parse already-processed PDFs
+python3 /home/duguex/scripts/mineru_wrapper.py paper.pdf --force
 ```
 
 Default output root is the current directory (`.`).

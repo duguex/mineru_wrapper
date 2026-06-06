@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""minerU wrapper — single PDF or batch parsing with env setup.
-
-Wraps minerU: sources ROCm env, sets GPU, runs parsing, verifies output,
-and generates image maps. One command, no raw CLI details in the skill.
+"""minerU wrapper — parse PDFs with automated ROCm env and output standardization.
 
 Usage:
-    # Single PDF (for `create` action)
-    mineru_wrapper.py --single paper.pdf [output_dir]
-
-    # Batch directory (for `batch-create` action)
-    mineru_wrapper.py --batch pdf_dir/ [--force]
+    mineru_wrapper.py paper.pdf                     # single PDF
+    mineru_wrapper.py pdf_dir/                      # all PDFs in dir
+    mineru_wrapper.py pdf_dir/ extra.pdf            # mixed
+    mineru_wrapper.py paper.pdf --force             # re-parse
 
 Logs: ~/logs/mineru/run_<timestamp>.log (full stdout + stderr per run)
+Output: parsed/<name>/{paper.md, images/, image-map.txt}
+
+For batch (2+ PDFs), also writes parsed/manifest.json.
 """
 import argparse
 import json
@@ -107,6 +106,30 @@ def generate_image_map(parsed_name: str, parsed_dir: Path) -> dict:
         "error": result.stderr.strip() if result.returncode != 0 else None,
     }
 
+def collect_pdfs(paths: list[str]) -> list[tuple[str, str]]:
+    """Resolve paths to (name, abs_path) for every PDF found.
+
+    Each path is either a .pdf file or a directory (scanned for *.pdf).
+    """
+    pdfs = []
+    seen = set()
+    for p in paths:
+        path = Path(p).resolve()
+        if path.is_file() and path.suffix.lower() == ".pdf":
+            name = derive_name(str(path))
+            if name not in seen:
+                pdfs.append((name, str(path)))
+                seen.add(name)
+        elif path.is_dir():
+            for f in sorted(path.glob("*.pdf")) + sorted(path.glob("*.PDF")):
+                name = derive_name(str(f))
+                if name not in seen:
+                    pdfs.append((name, str(f)))
+                    seen.add(name)
+        else:
+            print(f"Warning: {p} is not a PDF file or directory, skipping", file=sys.stderr)
+    return pdfs
+
 
 def standardize_output(name: str, raw_parent: Path, target_dir: Path) -> Path | None:
     """Move minerU output from raw_parent/<name>/auto/ to target_dir/<name>/.
@@ -166,210 +189,113 @@ def standardize_output(name: str, raw_parent: Path, target_dir: Path) -> Path | 
         raw_root.rmdir()
 
     return paper_dir / "paper.md"
+def main():
+    parser = argparse.ArgumentParser(
+        description="minerU wrapper — parse PDFs with automated ROCm env and output standardization"
+    )
+    parser.add_argument("pdfs", nargs="+", metavar="PATH",
+                        help="PDF file(s) or director(ies) of PDFs")
+    parser.add_argument("--force", action="store_true",
+                        help="Re-parse already-processed PDFs")
+    parser.add_argument("output", nargs="?", default=".",
+                        help="Output root directory (default: current directory)")
+    args = parser.parse_args()
 
+    all_pdfs = collect_pdfs(args.pdfs)
+    if not all_pdfs:
+        print("No PDFs found in the given paths", file=sys.stderr)
+        sys.exit(1)
 
-# ---------------------------------------------------------------------------
-# Single-paper mode
-# ---------------------------------------------------------------------------
+    if not mineru_available():
+        print("Warning: minerU conda env (torch_rocm72) not found.",
+              file=sys.stderr)
 
-def parse_single(pdf_path: Path, output_dir: Path):
-    """Parse a single PDF, standardize output, generate image map."""
-    name = derive_name(str(pdf_path))
-
-    print(f"Parsing {pdf_path} ...")
+    output_dir = Path(args.output)
+    is_batch = len(all_pdfs) > 1
     t0 = time.time()
 
-    # Stage the PDF under our derived name so minerU's output dir matches
-    # what generate_image_map / standardize_output expect. Without this,
-    # minerU uses the raw PDF stem (with dashes, dots, etc.) and the
-    # follow-up steps look in the wrong directory.
-    with tempfile.TemporaryDirectory(prefix="mineru_single_") as tmpdir:
-        staged = Path(tmpdir) / f"{name}.pdf"
-        os.symlink(pdf_path.resolve(), staged)
+    # Decide which PDFs to parse
+    if not is_batch and not args.force:
+        papers = all_pdfs
+    else:
+        papers = [(n, p) for n, p in all_pdfs
+                  if args.force or not (output_dir / "parsed" / n / "paper.md").exists()]
+        skipped = len(all_pdfs) - len(papers)
+        for n, p in all_pdfs:
+            if (n, p) not in papers:
+                print(f"  SKIP  {n}: {p}")
 
-        success = run_mineru(staged, output_dir)
-        if not success:
+    if not papers:
+        print("All PDFs already parsed. Use --force to re-parse.")
+        return
+
+    # Run minerU
+    if is_batch:
+        print(f"\nParsing {len(papers)} PDF(s) via batch mode...")
+        tmpdir = tempfile.mkdtemp(prefix="mineru_")
+        try:
+            for name, pdf_path in papers:
+                dst = os.path.join(tmpdir, name + ".pdf")
+                os.symlink(os.path.abspath(pdf_path), dst)
+            batch_ok = run_mineru(Path(tmpdir), output_dir)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+        if not batch_ok:
+            print("  minerU batch failed, retrying individually...")
+            for name, pdf_path in papers:
+                if not (output_dir / name / "auto").is_dir():
+                    print(f"  Retrying {name}...")
+                    run_mineru(Path(pdf_path), output_dir)
+    else:
+        name, pdf_path = papers[0]
+        print(f"\nParsing {Path(pdf_path).name}...")
+        if not run_mineru(Path(pdf_path), output_dir):
             print("  minerU failed", file=sys.stderr)
             sys.exit(1)
 
-        # Image mapping (runs from raw minerU output before cleanup)
+    # Common post-processing
+    print("\nPost-processing...")
+    for name, pdf_path in papers:
         raw_dir = output_dir / name
-        img_result = generate_image_map(name, raw_dir)
-        if not img_result["success"]:
-            print(f"  image map failed: {img_result.get('error', 'unknown')}",
-                  file=sys.stderr)
-
-        # Standardize: clean up minerU trash, move to parsed/<name>/
-        paper_md = standardize_output(name, output_dir, output_dir / "parsed")
-
-    if paper_md is None:
-        print(f"  standardize failed: no minerU output dir at "
-              f"{output_dir / name}/auto", file=sys.stderr)
-        sys.exit(1)
-
-    std_dir = paper_md.parent  # output/parsed/<name>/
-    images_dir = std_dir / "images"
-    image_map = std_dir / "image-map.txt"
+        if raw_dir.is_dir():
+            generate_image_map(name, raw_dir)
+            standardize_output(name, output_dir, output_dir / "parsed")
 
     elapsed = time.time() - t0
-    print(f"Done ({elapsed:.0f}s)")
-    print(f"  Markdown: {paper_md}")
-    print(f"  Images:   {images_dir}")
-    print(f"  Map:      {image_map}")
-    print(f"  In slides: \\graphicspath{{{images_dir}/}} "
-          f"+ \\includegraphics{{<hash>.jpg}}")
 
-
-# ---------------------------------------------------------------------------
-# Batch mode (same as original batch_parse.py logic)
-# ---------------------------------------------------------------------------
-
-def parse_batch(pdf_dir: Path, parsed_dir: Path, output_dir: Path, force: bool):
-    """Batch parse all PDFs in a directory."""
-    pdfs = sorted(pdf_dir.glob("*.pdf")) or sorted(pdf_dir.glob("*.PDF"))
-    if not pdfs:
-        print(f"No PDFs found in {pdf_dir}")
-        sys.exit(1)
-
-    # Stage 1: Scan
-    new_papers = []
-    skipped = []
-    for pdf in pdfs:
-        name = derive_name(str(pdf))
-        output_md = parsed_dir / name / "paper.md"
-        if output_md.exists() and not force:
-            skipped.append((name, str(pdf)))
-        else:
-            new_papers.append((name, str(pdf)))
-
-    print(f"Found {len(pdfs)} PDF(s): {len(new_papers)} new, {len(skipped)} skipped")
-    for name, path in skipped:
-        print(f"  SKIP  {name}: {path}")
-
-    if not new_papers:
-        print("Nothing to parse. Use --force to re-parse existing.")
-        parsed_dir.mkdir(parents=True, exist_ok=True)
-        manifest = {"settings": {"force": force}, "papers": []}
-        with open(parsed_dir / "manifest.json", "w") as f:
-            json.dump(manifest, f, indent=2)
-        return
-
-    # Stage 2: minerU batch parse
-    parsed_dir.mkdir(parents=True, exist_ok=True)
-    print(f"\nParsing {len(new_papers)} PDF(s) with minerU native batch mode...")
-    t0 = time.time()
-
-    # Staging dir with symlinks using derived clean names
-    tmpdir = tempfile.mkdtemp(prefix="beamer_batch_parse_")
-    try:
-        for name, pdf_path in new_papers:
-            dst = os.path.join(tmpdir, name + ".pdf")
-            os.symlink(os.path.abspath(pdf_path), dst)
-        batch_success = run_mineru(Path(tmpdir), parsed_dir)
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
-    elapsed = time.time() - t0
-    if batch_success:
-        print(f"  minerU batch completed ({elapsed:.0f}s)")
-    if not batch_success:
-        print(f"  minerU batch failed ({elapsed:.0f}s), retrying individually...")
-        for name, pdf_path in new_papers:
-            paper_dir = parsed_dir / name
-            if not (paper_dir / "auto").is_dir():
-                print(f"  Retrying {name}...")
-                run_mineru(Path(pdf_path), parsed_dir)
-    # Image mapping (before cleanup, minerU output still intact)
-    print("\nGenerating image maps...")
-    for name, _ in new_papers:
-        paper_raw = parsed_dir / name
-        if paper_raw.is_dir():
-            generate_image_map(name, paper_raw)
-
-    # Standardize: clean up minerU trash per paper
-    print("\nStandardizing output...")
-    for name, _ in new_papers:
-        standardize_output(name, parsed_dir, parsed_dir)
-
-    # Manifest
-    papers_manifest = []
-    for name, pdf_path in new_papers:
-        paper_dir = parsed_dir / name
-        paper_md = paper_dir / "paper.md"
-        images_dir = paper_dir / "images"
-        image_map = paper_dir / "image-map.txt"
-        ok = paper_md.exists()
-        entry = {
-            "name": name,
-            "pdf_path": pdf_path,
-            "parsed_dir": str(paper_dir),
-            "paper_md": str(paper_md) if ok else None,
-            "images_dir": str(images_dir) if images_dir.is_dir() else None,
-            "image_map": str(image_map) if image_map.exists() else None,
-            "status": "parsed" if ok else "failed",
-            "error": None if ok else f"paper.md not found at {paper_md}",
+    # Output
+    if is_batch:
+        manifest = {
+            "settings": {
+                "source": args.pdfs,
+                "output_dir": str(output_dir),
+                "force": args.force,
+            },
+            "papers": [
+                {
+                    "name": n,
+                    "pdf_path": p,
+                    "paper_md": str(output_dir / "parsed" / n / "paper.md"),
+                    "status": "parsed" if (output_dir / "parsed" / n / "paper.md").exists() else "failed",
+                }
+                for n, p in papers
+            ],
         }
-        papers_manifest.append(entry)
-
-
-    manifest = {
-        "settings": {
-            "source_dir": str(pdf_dir),
-            "output_dir": str(output_dir),
-            "parsed_dir": str(parsed_dir),
-            "force": force,
-        },
-        "papers": papers_manifest,
-    }
-
-    manifest_path = parsed_dir / "manifest.json"
-    with open(manifest_path, "w") as f:
-        json.dump(manifest, f, indent=2)
-    print(f"\nManifest written to {manifest_path}")
-
-    n_ok = sum(1 for p in papers_manifest if p["status"] == "parsed")
-    n_fail = sum(1 for p in papers_manifest if p["status"] != "parsed")
-    total = time.time() - t0
-    print(f"\nDone: {n_ok} parsed, {n_fail} failed, {len(skipped)} skipped "
-          f"({total:.0f}s)")
-
-
-# ---------------------------------------------------------------------------
-# Entry
-# ---------------------------------------------------------------------------
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="minerU wrapper: single PDF or batch parsing with env setup"
-    )
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--single", metavar="PDF", help="Parse a single PDF")
-    mode.add_argument("--batch", metavar="DIR", help="Parse all PDFs in a directory")
-    parser.add_argument("output", nargs="?", default=".",
-                        help="Output root directory (default: current directory)")
-    parser.add_argument("--force", action="store_true",
-                        help="Re-parse even if output exists (batch only)")
-    args = parser.parse_args()
-
-    if args.single:
-        pdf = Path(args.single)
-        if not pdf.is_file():
-            print(f"Error: {pdf} is not a file", file=sys.stderr)
-            sys.exit(1)
-        if not mineru_available():
-            print("Warning: minerU conda env (torch_rocm72) not found.",
-                  file=sys.stderr)
-        parse_single(pdf, Path(args.output))
+        manifest_path = output_dir / "parsed" / "manifest.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+        n_ok = sum(1 for e in manifest["papers"] if e["status"] == "parsed")
+        n_fail = len(manifest["papers"]) - n_ok
+        print(f"\nManifest: {manifest_path}")
+        print(f"Done: {n_ok} parsed, {n_fail} failed, {skipped} skipped ({elapsed:.0f}s)")
     else:
-        pdf_dir = Path(args.batch)
-        if not pdf_dir.is_dir():
-            print(f"Error: {pdf_dir} is not a directory", file=sys.stderr)
-            sys.exit(1)
-        if not mineru_available():
-            print("Warning: minerU conda env (torch_rocm72) not found.",
-                  file=sys.stderr)
-        output_dir = Path(args.output)
-        parse_batch(pdf_dir, output_dir / "parsed", output_dir, args.force)
+        name = papers[0][0]
+        print(f"\nDone ({elapsed:.0f}s)")
+        print(f"  Markdown: {output_dir}/parsed/{name}/paper.md")
+        print(f"  Images:   {output_dir}/parsed/{name}/images/")
+        print(f"  Map:      {output_dir}/parsed/{name}/image-map.txt")
 
 
 if __name__ == "__main__":
