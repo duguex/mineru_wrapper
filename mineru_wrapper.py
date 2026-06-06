@@ -16,6 +16,7 @@ For batch (2+ PDFs), also writes <output>/parsed/manifest.json.
 import argparse
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -181,10 +182,33 @@ def standardize_output(name: str, raw_parent: Path, target_dir: Path) -> Path | 
         dst_map.unlink(missing_ok=True)
         shutil.move(str(src_map), str(dst_map))
 
-    # 4. Everything still in auto/ is minerU auxiliary output — drop it.
+    # 4. Drop orphan images: any jpg in images/ that is referenced by
+    #    neither image-map.txt nor paper.md. These are formula/equation
+    #    renderings that paper.md already represents as LaTeX. Re-enabled
+    #    in this commit after 504c915 fixed the extract_base priority bug
+    #    that previously caused real figures to be misclassified as orphans.
+    dst_md = paper_dir / "paper.md"
+    dst_map = paper_dir / "image-map.txt"
+    dst_images = paper_dir / "images"
+    if dst_images.is_dir():
+        mapped = set()
+        if dst_map.exists():
+            for line in dst_map.read_text().splitlines():
+                if line and not line.startswith("#"):
+                    fname = line.split("→", 1)[0].strip()
+                    if fname:
+                        mapped.add(fname)
+        md_refs = set()
+        if dst_md.exists():
+            md_refs = set(re.findall(r'\(images/(\S+\.jpg)', dst_md.read_text()))
+        for f in list(dst_images.glob("*.jpg")):
+            if f.name not in mapped and f.name not in md_refs:
+                f.unlink()
+
+    # 5. Everything still in auto/ is minerU auxiliary output — drop it.
     shutil.rmtree(str(auto_dir), ignore_errors=True)
 
-    # 5. Single mode: remove the now-empty raw wrapper. Batch mode skips
+    # 6. Single mode: remove the now-empty raw wrapper. Batch mode skips
     # this because raw_root and paper_dir are the same directory.
     raw_root = raw_parent / name
     if raw_root != paper_dir and raw_root.is_dir() and not any(raw_root.iterdir()):

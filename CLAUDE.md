@@ -45,7 +45,7 @@ Two scripts with a one-way dependency: `mineru_wrapper.py` calls `map_mineru_ima
 5. **Post-processing** — for each paper: `generate_image_map` (subprocess to `map_mineru_images.py`) then `standardize_output`.
 6. **Manifest** — always written to `<output>/parsed/manifest.json` with per-paper `{name, pdf_path, paper_md, status}`.
 
-**`standardize_output(name, raw_parent, target_dir)`** moves minerU's `raw_parent/<name>/auto/{<name>.md, images/, image-map.txt, junk}` to `target_dir/<name>/{paper.md, images/, image-map.txt}`, `rmtree`s `auto/` whole (everything still in there is minerU auxiliary output), and removes the raw wrapper dir only when it differs from `paper_dir`. Same logic handles both single-PDF layout (raw_parent ≠ target_dir) and batch layout (raw_parent == target_dir). It does **not** filter `images/` — every JPG minerU extracted is preserved, even if it's a formula rendering not referenced in paper.md (an earlier filter was reverted in commit `aa94e06` after it mistakenly dropped a real figure).
+**`standardize_output(name, raw_parent, target_dir)`** moves minerU's `raw_parent/<name>/auto/{<name>.md, images/, image-map.txt, junk}` to `target_dir/<name>/{paper.md, images/, image-map.txt}`, then deletes any image in `images/` that is referenced by neither `image-map.txt` nor `paper.md` (formula/equation renderings — paper.md already represents these as LaTeX). Finally `rmtree`s `auto/` whole and removes the raw wrapper dir only when it differs from `paper_dir`. Same logic handles both single-PDF layout (raw_parent ≠ target_dir) and batch layout (raw_parent == target_dir).
 
 `derive_name` (filename → clean alphanumeric key) is the one small utility worth knowing; shell command strings use stdlib `shlex.quote`.
 
@@ -58,9 +58,11 @@ Algorithm:
 - Images without a detectable caption inherit the previous figure's base label — they join the right group as `(b)`, `(c)`, … instead of being dumped into a separate bucket.
 - After every ref has a base label, consecutive items sharing one are grouped: a run of ≥2 becomes `(a)`, `(b)`, `(c)` …; singletons keep the bare base label (no `(a)`).
 - Refs that appear before any caption at all (rare) fall back to `FIG. ??`.
-- Images extracted by minerU but never embedded in `paper.md` (typically formula/equation renderings already represented as LaTeX) are not entered into `image-map.txt` but **are not deleted** — they remain in `images/` as a side-channel.
+- Images extracted by minerU but never embedded in `paper.md` are deleted from `images/` by `standardize_output` (formula/equation renderings already represented as LaTeX in `paper.md`).
 
-**Known limitation:** Coverage equals what minerU embeds in `paper.md`. Equation-heavy papers (e.g. Grzybowski 2000) yield 0 entries in `image-map.txt` because all 36 extracted JPGs were formula renderings minerU did not embed. The files still sit in `images/`; if downstream consumers iterate the directory rather than the map, they'll see the noise. A previous orphan filter (commit `bfb4732`) was reverted in `aa94e06` because it removed a real figure misclassified as orphan; the underlying `extract_base` priority bug is now fixed by commit `504c915` (earliest-match-wins), so re-enabling the filter is safe to revisit.
+**Known limitation:** Coverage equals what minerU embeds in `paper.md`. Equation-heavy papers (e.g. Grzybowski 2000) end up with 0 entries in `image-map.txt` and an empty `images/` directory — all 36 extracted JPGs were formula renderings, filtered as orphans. If you need every PDF page as an image regardless, use a different tool.
+
+**Filter safety:** The orphan filter was previously enabled (`bfb4732`) and reverted (`aa94e06`) after mistakenly dropping a real Table figure. Re-enabled here once `504c915` fixed the `extract_base` priority bug that caused that misclassification. Replay on the paper_example corpus confirms no real figure is dropped: LS20649 9→8, Batatia 29→7, Grzybowski 36→0.
 
 ## Vision model
 
@@ -107,7 +109,7 @@ There is no automated test suite. Validate changes manually using these recipes 
 
 ### 1. Dry-run unit test for `standardize_output` (no GPU, ~1 s)
 
-The output-move logic has fine-grained edge cases (single vs batch layout, idempotent re-runs, missing `auto/`). This harness exercises them against a mocked minerU output tree:
+The output-move logic has fine-grained edge cases (single vs batch layout, idempotent re-runs, missing `auto/`, orphan-image filtering). This harness exercises them against a mocked minerU output tree:
 
 ```bash
 python3 - <<'PY'
@@ -120,13 +122,15 @@ def make(parent, name):
     """Mock the minerU auto/ layout."""
     auto = parent / name / "auto"
     auto.mkdir(parents=True)
-    (auto / f"{name}.md").write_text("# Mock\n")
+    (auto / f"{name}.md").write_text("# Mock\n\n![](images/xyz.jpg)\n")
     (auto / "image-map.txt").write_text("abc.jpg  →  FIG. 1\n")
     for suffix in ("_layout.pdf", "_origin.pdf", "_span.pdf",
                    "_middle.json", "_model.json", "_content_list_v2.json"):
         (auto / f"{name}{suffix}").write_bytes(b"junk")
     (auto / "images").mkdir()
-    (auto / "images" / "abc.jpg").write_bytes(b"jpg")
+    (auto / "images" / "abc.jpg").write_bytes(b"jpg")     # in image-map → kept
+    (auto / "images" / "xyz.jpg").write_bytes(b"jpg")     # in paper.md → kept
+    (auto / "images" / "orphan.jpg").write_bytes(b"jpg")  # in neither → dropped
 
 import tempfile
 with tempfile.TemporaryDirectory() as td:
@@ -135,15 +139,20 @@ with tempfile.TemporaryDirectory() as td:
     # Single mode: raw_parent ≠ target_dir → raw wrapper is removed
     make(td / "single", "demo")
     r = standardize_output("demo", td / "single", td / "single" / "parsed")
+    imgs = td / "single" / "parsed" / "demo" / "images"
     assert r.exists() and r.name == "paper.md"
-    assert (td / "single" / "parsed" / "demo" / "images" / "abc.jpg").exists()
+    assert (imgs / "abc.jpg").exists(), "image-map'd jpg should survive"
+    assert (imgs / "xyz.jpg").exists(), "paper.md-referenced jpg should survive"
+    assert not (imgs / "orphan.jpg").exists(), "orphan jpg should be filtered"
     assert not (td / "single" / "demo").exists(), "raw wrapper should be gone"
 
     # Batch mode: raw_parent == target_dir → wrapper survives, auto/ doesn't
     make(td / "batch", "demo")
     r = standardize_output("demo", td / "batch", td / "batch")
+    imgs = td / "batch" / "demo" / "images"
     assert r.exists()
-    assert (td / "batch" / "demo" / "images" / "abc.jpg").exists()
+    assert (imgs / "abc.jpg").exists() and (imgs / "xyz.jpg").exists()
+    assert not (imgs / "orphan.jpg").exists()
     assert not (td / "batch" / "demo" / "auto").exists()
 
     # Idempotent re-run: another minerU output landing on top should work
