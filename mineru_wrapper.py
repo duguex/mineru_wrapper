@@ -11,17 +11,8 @@ Usage:
     # Batch directory (for `batch-create` action)
     mineru_wrapper.py --batch pdf_dir/ [--force]
 
-Output (single):
-    parsed/<name>/
-        paper.md           structured Markdown  (renamed from <name>.md)
-        images/            extracted figures (JPG)
-        image-map.txt      hash → figure label mapping
-
-Output (batch):
-    parsed/manifest.json   paper list for downstream stages
-    parsed/<name>/         same structure per paper, no minerU junk files
+Logs: ~/logs/mineru/run_<timestamp>.log (full stdout + stderr per run)
 """
-
 import argparse
 import json
 import os
@@ -30,8 +21,8 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -66,16 +57,12 @@ def mineru_available() -> bool:
 
 
 def run_mineru(input_path: Path, output_dir: Path) -> bool:
-    """Run minerU on a single PDF or directory with correct ROCm env.
+    """Run minerU with persistent logging. Output streams to both terminal and log file."""
+    log_dir = Path.home() / "logs" / "mineru"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
-    Args:
-        input_path: PDF file or directory of PDFs.
-        output_dir: minerU output root.
-
-    Returns True if minerU exited successfully.
-    """
     env_script = os.path.expanduser("~/mineru-rocm/mineru-rocm-env.sh")
-    log_path = f"/tmp/mineru_{int(time.time())}.log"
     cmd = (
         f"export MINERU_API_MAX_CONCURRENT_REQUESTS=1 && "
         f"source {shlex_quote(env_script)} && "
@@ -83,19 +70,30 @@ def run_mineru(input_path: Path, output_dir: Path) -> bool:
         f"export PATH=/opt/conda/bin:$PATH && "
         f"conda run -n torch_rocm72 mineru -p {shlex_quote(str(input_path))} "
         f"-o {shlex_quote(str(output_dir))} -b pipeline -m auto -l en"
-        f" 2> >(tee {log_path} >&2)"
     )
-    result = subprocess.run(["bash", "-c", cmd])
-    if result.returncode != 0:
-        print(f"minerU failed (exit {result.returncode}). Debug log: {log_path}", file=sys.stderr)
+
+    print(f"  Log: {log_path}")
+    with open(log_path, "w") as log:
+        log.write(f"=== minerU wrapper run {datetime.now()} ===\n")
+        log.write(f"cmd: {cmd}\n\n")
+        proc = subprocess.Popen(
+            ["bash", "-c", cmd],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            bufsize=1, text=True,
+        )
+        for line in iter(proc.stdout.readline, ""):
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            log.write(line)
+        proc.wait()
+
+    if proc.returncode != 0:
+        print(f"minerU failed (exit {proc.returncode}). Log: {log_path}", file=sys.stderr)
         return False
     return True
 
-def generate_image_map(parsed_name: str, parsed_dir: Path) -> dict:
-    """Run map_mineru_images.py for a single paper.
 
-    Returns {"success": bool, "error": str | None}.
-    """
+def generate_image_map(parsed_name: str, parsed_dir: Path) -> dict:
     map_script = Path(__file__).resolve().parent / "map_mineru_images.py"
     content_json = parsed_dir / "auto" / f"{parsed_name}_content_list_v2.json"
     image_map = parsed_dir / "auto" / "image-map.txt"
