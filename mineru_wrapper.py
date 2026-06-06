@@ -182,7 +182,6 @@ def standardize_output(name: str, raw_parent: Path, target_dir: Path) -> Path | 
         shutil.move(str(src_map), str(dst_map))
 
     # 4. Everything still in auto/ is minerU auxiliary output — drop it.
-
     shutil.rmtree(str(auto_dir), ignore_errors=True)
 
     # 5. Single mode: remove the now-empty raw wrapper. Batch mode skips
