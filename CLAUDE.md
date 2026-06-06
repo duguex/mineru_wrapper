@@ -27,7 +27,7 @@ Every run writes `output_dir/parsed/manifest.json`; when exactly one PDF is proc
 
 **Image-map script standalone** (rarely needed — wrapper calls this internally):
 ```bash
-python3 /home/duguex/scripts/map_mineru_images.py -i <content_list_v2.json> -o image-map.txt
+python3 /home/duguex/scripts/map_mineru_images.py -m <paper.md> -o image-map.txt
 ```
 
 **Logs** — every minerU invocation streams to `~/logs/mineru/run_<YYYYMMDD_HHMMSS>.log` (full stdout + stderr). The wrapper's `print()` lines appear in the terminal; the underlying minerU chatter is in the log file.
@@ -49,13 +49,42 @@ Two scripts with a one-way dependency: `mineru_wrapper.py` calls `map_mineru_ima
 
 `derive_name` (filename → clean alphanumeric key) is the one small utility worth knowing; shell command strings use stdlib `shlex.quote`.
 
-**`map_mineru_images.py`** — pure function `build_image_map(path) -> (text, groups)`. Consumes minerU's `content_list_v2.json` and produces `image-map.txt` (one line per image: `<hash>.jpg  →  FIG. 1(a)  (page 3, 1-based)`). The grouping heuristic:
-- Full-width items (bbox x2-x0 > 60% of page max x) are standalone (typically tables).
-- On a page with exactly **one** captioned figure + uncaptioned items → all items become subfigures `(a)`, `(b)`, … in reading order.
-- Multiple captioned figures → each is standalone.
-- Items are partitioned into rows (bbox y within `ROW_TOLERANCE=30`) and within a row sorted by bbox x.
+**`map_mineru_images.py`** — reads `paper.md` (minerU's structured Markdown), finds all `![](...)` image references, and extracts figure/table labels from the surrounding text. Produces `image-map.txt` with one line per image: `<hash>.jpg  →  FIG. 1(a)`.
 
-The figure-label regex accepts `FIG. 1` / `Figure 1a` / `TABLE IV` / `Table 3` (case-insensitive). Coverage is incomplete in practice — many minerU `content_list_v2.json` entries surface as `equation` or `text` blocks and never enter the mapping, and the regex does not catch `Fig\b` (no period) or `Figure 1A` (uppercase subscript). Improving recall is a known follow-up.
+Algorithm:
+- Scans `paper.md` for `![](images/<hash>.jpg)` references in document order.
+- For each, looks 400 chars ahead for `FIG. N` / `TABLE N` caption text.
+- Consecutive images with the same base label get incremental sub-labels (a), (b), (c), … — handles minerU's subfigure splitting.
+- Images without a detectable label in the surrounding text are marked as `FIG. ??(label)` — these are real figures that minerU extracted but never embedded in the markdown.
+- Images not referenced in `paper.md` at all are left in `images/` but not mapped. These are typically formula/equation renderings (already represented as LaTeX in paper.md) or OCR table fallbacks.
+
+**Known limitation:** The mapper is 100% accurate for images present in paper.md. Some papers (e.g. Hu_2025, Grzybowski_2000) have many extracted images that minerU never placed in the markdown — these are real figures missed by minerU, not by the mapper. They remain accessible in `images/` but lack a label in `image-map.txt`.
+
+## Vision model
+
+A local vision model is deployed at `192.168.1.130:8001` (llama.cpp server, Qwen3.6, multimodal). It is configured in `~/.omp/agent/config.yml` as `vision` and `designer` roles.
+
+**Purpose:** Verify and fill in `FIG.??` labels that the text-based mapper cannot resolve. The vision model can look at an image and determine whether it's a FIGURE, TABLE, FORMULA, or SUBFIGURE.
+
+**Usage via curl** (for batch inspection):
+```bash
+python3 -c "
+import json, subprocess, base64, tempfile, os
+b64 = base64.b64encode(open('image.jpg','rb').read()).decode()
+payload = {'model':'unsloth/Qwen3.6','messages':[{'role':'user','content':[
+    {'type':'image_url','image_url':{'url':f'data:image/jpeg;base64,{b64}'}},
+    {'type':'text','text':'One word: FIGURE, TABLE, FORMULA, or SUBFIGURE?'}
+]}],'max_tokens':512,'stream':False}
+with tempfile.NamedTemporaryFile(mode='w',suffix='.json',delete=False) as f:
+    json.dump(payload,f); tmp=f.name
+r = subprocess.run(['curl','-s','http://192.168.1.130:8001/v1/chat/completions',
+    '-H','Content-Type: application/json','-d',f'@{tmp}'],
+    capture_output=True,text=True,timeout=60)
+os.unlink(tmp)
+print(json.loads(r.stdout)['choices'][0]['message'].get('content',''))
+"
+```
+Each call takes 3-7 seconds. The model is a reasoning model; the answer appears in the `content` field (requires `max_tokens ≥ 512` — lower values truncate before the answer is emitted).
 
 ## Output structure (canonical, post-wrapper)
 
