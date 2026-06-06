@@ -214,19 +214,15 @@ def main():
               file=sys.stderr)
 
     output_dir = Path(args.output)
-    is_batch = len(all_pdfs) > 1
     t0 = time.time()
 
-    # Decide which PDFs to parse
-    if not is_batch and not args.force:
-        papers = all_pdfs
-    else:
-        papers = [(n, p) for n, p in all_pdfs
-                  if args.force or not (output_dir / "parsed" / n / "paper.md").exists()]
-        skipped = len(all_pdfs) - len(papers)
-        for n, p in all_pdfs:
-            if (n, p) not in papers:
-                print(f"  SKIP  {n}: {p}")
+    # Skip already-parsed unless --force.
+    papers = [(n, p) for n, p in all_pdfs
+              if args.force or not (output_dir / "parsed" / n / "paper.md").exists()]
+    papers_set = set(papers)
+    skipped = [(n, p) for n, p in all_pdfs if (n, p) not in papers_set]
+    for n, p in skipped:
+        print(f"  SKIP  {n}: {p}")
 
     if not papers:
         print("All PDFs already parsed. Use --force to re-parse.")
@@ -235,30 +231,25 @@ def main():
     # Run minerU — stage PDFs as symlinks under derived names so minerU's
     # output dir matches what post-processing expects (avoids the PDF-stem
     # vs derived-name mismatch that breaks special-character filenames).
+    # minerU accepts a directory as input regardless of how many PDFs are
+    # in it, so single (N=1) is just batch with one symlink.
     with tempfile.TemporaryDirectory(prefix="mineru_") as tmpdir:
         staged = [(name, Path(tmpdir) / f"{name}.pdf") for name, _ in papers]
         for (_, src), (_, dst) in zip(papers, staged):
             os.symlink(os.path.abspath(src), dst)
 
-        if is_batch:
-            print(f"\nParsing {len(papers)} PDF(s) via batch mode...")
-            batch_ok = run_mineru(Path(tmpdir), output_dir)
-            if not batch_ok:
-                print("  minerU batch failed, retrying individually...")
-                for name, staged_pdf in staged:
-                    if not (output_dir / name / "auto").is_dir():
-                        print(f"  Retrying {name}...")
-                        run_mineru(staged_pdf, output_dir)
-        else:
-            name, staged_pdf = staged[0]
-            print(f"\nParsing {Path(papers[0][1]).name}...")
-            if not run_mineru(staged_pdf, output_dir):
-                print("  minerU failed", file=sys.stderr)
-                sys.exit(1)
+        print(f"\nParsing {len(papers)} PDF(s)...")
+        batch_ok = run_mineru(Path(tmpdir), output_dir)
+        if not batch_ok:
+            print("  minerU run failed, retrying individually...")
+            for name, staged_pdf in staged:
+                if not (output_dir / name / "auto").is_dir():
+                    print(f"  Retrying {name}...")
+                    run_mineru(staged_pdf, output_dir)
 
-    # Common post-processing
+    # Post-processing
     print("\nPost-processing...")
-    for name, pdf_path in papers:
+    for name, _ in papers:
         raw_dir = output_dir / name
         if raw_dir.is_dir():
             generate_image_map(name, raw_dir)
@@ -266,35 +257,36 @@ def main():
 
     elapsed = time.time() - t0
 
-    # Output
-    if is_batch:
-        manifest = {
-            "settings": {
-                "source": args.pdfs,
-                "output_dir": str(output_dir),
-                "force": args.force,
-            },
-            "papers": [
-                {
-                    "name": n,
-                    "pdf_path": p,
-                    "paper_md": str(output_dir / "parsed" / n / "paper.md"),
-                    "status": "parsed" if (output_dir / "parsed" / n / "paper.md").exists() else "failed",
-                }
-                for n, p in papers
-            ],
-        }
-        manifest_path = output_dir / "parsed" / "manifest.json"
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(manifest_path, "w") as f:
-            json.dump(manifest, f, indent=2)
-        n_ok = sum(1 for e in manifest["papers"] if e["status"] == "parsed")
-        n_fail = len(manifest["papers"]) - n_ok
-        print(f"\nManifest: {manifest_path}")
-        print(f"Done: {n_ok} parsed, {n_fail} failed, {skipped} skipped ({elapsed:.0f}s)")
-    else:
+    # Always write manifest (single-PDF runs also benefit from a failure
+    # record that survives the process exit).
+    manifest = {
+        "settings": {
+            "source": args.pdfs,
+            "output_dir": str(output_dir),
+            "force": args.force,
+        },
+        "papers": [
+            {
+                "name": n,
+                "pdf_path": p,
+                "paper_md": str(output_dir / "parsed" / n / "paper.md"),
+                "status": "parsed" if (output_dir / "parsed" / n / "paper.md").exists() else "failed",
+            }
+            for n, p in papers
+        ],
+    }
+    manifest_path = output_dir / "parsed" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+    n_ok = sum(1 for e in manifest["papers"] if e["status"] == "parsed")
+    n_fail = len(manifest["papers"]) - n_ok
+
+    print(f"\nManifest: {manifest_path}")
+    print(f"Done: {n_ok} parsed, {n_fail} failed, {len(skipped)} skipped ({elapsed:.0f}s)")
+    # Friendly path printout for the common single-PDF case.
+    if len(papers) == 1:
         name = papers[0][0]
-        print(f"\nDone ({elapsed:.0f}s)")
         print(f"  Markdown: {output_dir}/parsed/{name}/paper.md")
         print(f"  Images:   {output_dir}/parsed/{name}/images/")
         print(f"  Map:      {output_dir}/parsed/{name}/image-map.txt")
