@@ -226,8 +226,8 @@ def parse_batch(pdf_dir: Path, parsed_dir: Path, output_dir: Path, force: bool):
     skipped = []
     for pdf in pdfs:
         name = derive_name(str(pdf))
-        output_tex = output_dir / "slides" / name / "slides.tex"
-        if output_tex.exists() and not force:
+        output_md = parsed_dir / name / "paper.md"
+        if output_md.exists() and not force:
             skipped.append((name, str(pdf)))
         else:
             new_papers.append((name, str(pdf)))

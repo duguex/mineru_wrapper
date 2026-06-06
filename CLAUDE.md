@@ -19,7 +19,7 @@ python3 /home/duguex/scripts/mineru_wrapper.py --single paper.pdf [output_dir]
 ```bash
 python3 /home/duguex/scripts/mineru_wrapper.py --batch pdf_dir/ [--force]
 ```
-Use `--force` to re-parse papers that already have `output_dir/slides/<name>/slides.tex` (the batch skip key).
+Use `--force` to re-parse papers that already have `parsed/<name>/paper.md` (the batch skip key).
 
 **Image-map script standalone** (rarely needed — wrapper calls this internally):
 ```bash
