@@ -2,15 +2,16 @@
 """minerU wrapper — parse PDFs with automated ROCm env and output standardization.
 
 Usage:
-    mineru_wrapper.py paper.pdf                     # single PDF
-    mineru_wrapper.py pdf_dir/                      # all PDFs in dir
-    mineru_wrapper.py pdf_dir/ extra.pdf            # mixed
-    mineru_wrapper.py paper.pdf --force             # re-parse
+    mineru_wrapper.py paper.pdf                      # single PDF
+    mineru_wrapper.py pdf_dir/                       # all PDFs in dir
+    mineru_wrapper.py pdf_dir/ extra.pdf             # mixed (files + dirs)
+    mineru_wrapper.py paper.pdf --force              # re-parse
+    mineru_wrapper.py paper.pdf -o /tmp/out          # custom output root
 
 Logs: ~/logs/mineru/run_<timestamp>.log (full stdout + stderr per run)
-Output: parsed/<name>/{paper.md, images/, image-map.txt}
+Output: <output>/parsed/<name>/{paper.md, images/, image-map.txt}
 
-For batch (2+ PDFs), also writes parsed/manifest.json.
+For batch (2+ PDFs), also writes <output>/parsed/manifest.json.
 """
 import argparse
 import json
@@ -189,16 +190,18 @@ def standardize_output(name: str, raw_parent: Path, target_dir: Path) -> Path | 
         raw_root.rmdir()
 
     return paper_dir / "paper.md"
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="minerU wrapper — parse PDFs with automated ROCm env and output standardization"
     )
     parser.add_argument("pdfs", nargs="+", metavar="PATH",
                         help="PDF file(s) or director(ies) of PDFs")
+    parser.add_argument("-o", "--output", default=".",
+                        help="Output root directory (default: current directory)")
     parser.add_argument("--force", action="store_true",
                         help="Re-parse already-processed PDFs")
-    parser.add_argument("output", nargs="?", default=".",
-                        help="Output root directory (default: current directory)")
     args = parser.parse_args()
 
     all_pdfs = collect_pdfs(args.pdfs)
@@ -229,30 +232,29 @@ def main():
         print("All PDFs already parsed. Use --force to re-parse.")
         return
 
-    # Run minerU
-    if is_batch:
-        print(f"\nParsing {len(papers)} PDF(s) via batch mode...")
-        tmpdir = tempfile.mkdtemp(prefix="mineru_")
-        try:
-            for name, pdf_path in papers:
-                dst = os.path.join(tmpdir, name + ".pdf")
-                os.symlink(os.path.abspath(pdf_path), dst)
-            batch_ok = run_mineru(Path(tmpdir), output_dir)
-        finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
+    # Run minerU — stage PDFs as symlinks under derived names so minerU's
+    # output dir matches what post-processing expects (avoids the PDF-stem
+    # vs derived-name mismatch that breaks special-character filenames).
+    with tempfile.TemporaryDirectory(prefix="mineru_") as tmpdir:
+        staged = [(name, Path(tmpdir) / f"{name}.pdf") for name, _ in papers]
+        for (_, src), (_, dst) in zip(papers, staged):
+            os.symlink(os.path.abspath(src), dst)
 
-        if not batch_ok:
-            print("  minerU batch failed, retrying individually...")
-            for name, pdf_path in papers:
-                if not (output_dir / name / "auto").is_dir():
-                    print(f"  Retrying {name}...")
-                    run_mineru(Path(pdf_path), output_dir)
-    else:
-        name, pdf_path = papers[0]
-        print(f"\nParsing {Path(pdf_path).name}...")
-        if not run_mineru(Path(pdf_path), output_dir):
-            print("  minerU failed", file=sys.stderr)
-            sys.exit(1)
+        if is_batch:
+            print(f"\nParsing {len(papers)} PDF(s) via batch mode...")
+            batch_ok = run_mineru(Path(tmpdir), output_dir)
+            if not batch_ok:
+                print("  minerU batch failed, retrying individually...")
+                for name, staged_pdf in staged:
+                    if not (output_dir / name / "auto").is_dir():
+                        print(f"  Retrying {name}...")
+                        run_mineru(staged_pdf, output_dir)
+        else:
+            name, staged_pdf = staged[0]
+            print(f"\nParsing {Path(papers[0][1]).name}...")
+            if not run_mineru(staged_pdf, output_dir):
+                print("  minerU failed", file=sys.stderr)
+                sys.exit(1)
 
     # Common post-processing
     print("\nPost-processing...")
