@@ -45,7 +45,7 @@ Two scripts with a one-way dependency: `mineru_wrapper.py` calls `map_mineru_ima
 5. **Post-processing** — for each paper: `generate_image_map` (subprocess to `map_mineru_images.py`) then `standardize_output`.
 6. **Manifest** — always written to `<output>/parsed/manifest.json` with per-paper `{name, pdf_path, paper_md, status}`.
 
-**`standardize_output(name, raw_parent, target_dir)`** moves minerU's `raw_parent/<name>/auto/{<name>.md, images/, image-map.txt, junk}` to `target_dir/<name>/{paper.md, images/, image-map.txt}`, then deletes any image in `images/` that is referenced by neither `image-map.txt` nor `paper.md` (formula/equation renderings — paper.md already represents these as LaTeX). Finally `rmtree`s `auto/` whole and removes the raw wrapper dir only when it differs from `paper_dir`. Same logic handles both single-PDF layout (raw_parent ≠ target_dir) and batch layout (raw_parent == target_dir).
+**`standardize_output(name, raw_parent, target_dir)`** moves minerU's `raw_parent/<name>/auto/{<name>.md, images/, image-map.txt, junk}` to `target_dir/<name>/{paper.md, images/, image-map.txt}`, then deletes any image in `images/` that is referenced by neither `image-map.txt` nor `paper.md`. `paper.md` is the source of truth: real figures appear as `![](images/<hash>.jpg)`, equations as `$…$` LaTeX, tables as inline `<table>…</table>`. JPGs minerU extracted but paper.md doesn't reference are duplicates of one of the structured forms and are dropped. Finally `rmtree`s `auto/` whole and removes the raw wrapper dir only when it differs from `paper_dir`. Same logic handles both single-PDF layout (raw_parent ≠ target_dir) and batch layout (raw_parent == target_dir).
 
 `derive_name` (filename → clean alphanumeric key) is the one small utility worth knowing; shell command strings use stdlib `shlex.quote`.
 
@@ -58,11 +58,9 @@ Algorithm:
 - Images without a detectable caption inherit the previous figure's base label — they join the right group as `(b)`, `(c)`, … instead of being dumped into a separate bucket.
 - After every ref has a base label, consecutive items sharing one are grouped: a run of ≥2 becomes `(a)`, `(b)`, `(c)` …; singletons keep the bare base label (no `(a)`).
 - Refs that appear before any caption at all (rare) fall back to `FIG. ??`.
-- Images extracted by minerU but never embedded in `paper.md` are deleted from `images/` by `standardize_output` (formula/equation renderings already represented as LaTeX in `paper.md`).
+- Images extracted by minerU but never embedded in `paper.md` are deleted from `images/` by `standardize_output` — these are duplicates of content paper.md already expresses structurally (LaTeX formulas, markdown tables).
 
-**Known limitation:** Coverage equals what minerU embeds in `paper.md`. Equation-heavy papers (e.g. Grzybowski 2000) end up with 0 entries in `image-map.txt` and an empty `images/` directory — all 36 extracted JPGs were formula renderings, filtered as orphans. If you need every PDF page as an image regardless, use a different tool.
-
-**Filter safety:** The orphan filter was previously enabled (`bfb4732`) and reverted (`aa94e06`) after mistakenly dropping a real Table figure. Re-enabled here once `504c915` fixed the `extract_base` priority bug that caused that misclassification. Replay on the paper_example corpus confirms no real figure is dropped: LS20649 9→8, Batatia 29→7, Grzybowski 36→0.
+**Known limitation:** Coverage equals what minerU embeds in `paper.md`. Equation-heavy papers (e.g. Grzybowski 2000) end up with 0 entries in `image-map.txt` and an empty `images/` because every extracted JPG was a formula rendering already present as LaTeX. Verified on `paper_example`: LS20649 9→7, Batatia 29→7, Grzybowski 36→0; no real figure dropped.
 
 ## Vision model
 
