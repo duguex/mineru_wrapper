@@ -180,10 +180,31 @@ def standardize_output(name: str, raw_parent: Path, target_dir: Path) -> Path | 
         dst_map.unlink(missing_ok=True)
         shutil.move(str(src_map), str(dst_map))
 
-    # 4. Everything still in auto/ is minerU auxiliary output — drop it.
+    # 4. Remove images not in image-map.txt or paper.md (formula noise).
+    #    image-map.txt only has entries for type=image/chart/table items.
+    #    The rest are formula/equation renderings that paper.md already has as LaTeX.
+    dst_map = paper_dir / "image-map.txt"
+    dst_md = paper_dir / "paper.md"
+    dst_images = paper_dir / "images"
+    if dst_map.exists() and dst_images.is_dir():
+        mapped = set()
+        for line in dst_map.read_text().splitlines():
+            if line and not line.startswith("#"):
+                fn = line.split("→", 1)[0].strip()
+                if fn:
+                    mapped.add(fn)
+        md_refs = set()
+        if dst_md.exists():
+            import re
+            md_refs = set(re.findall(r'\(images/(\S+\.jpg)', dst_md.read_text()))
+        for f in list(dst_images.glob("*.jpg")):
+            if f.name not in mapped and f.name not in md_refs:
+                f.unlink()
+
+    # 5. Everything still in auto/ is minerU auxiliary output — drop it.
     shutil.rmtree(str(auto_dir), ignore_errors=True)
 
-    # 5. Single mode: remove the now-empty raw wrapper. Batch mode skips
+    # 6. Single mode: remove the now-empty raw wrapper. Batch mode skips
     # this because raw_root and paper_dir are the same directory.
     raw_root = raw_parent / name
     if raw_root != paper_dir and raw_root.is_dir() and not any(raw_root.iterdir()):
