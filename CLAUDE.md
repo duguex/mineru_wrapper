@@ -60,7 +60,10 @@ Algorithm:
 - Refs that appear before any caption at all (rare) fall back to `FIG. ??`.
 - Images extracted by minerU but never embedded in `paper.md` are deleted from `images/` by `standardize_output` — these are duplicates of content paper.md already expresses structurally (LaTeX formulas, markdown tables).
 
-**Known limitation:** Coverage equals what minerU embeds in `paper.md`. Equation-heavy papers (e.g. Grzybowski 2000) end up with 0 entries in `image-map.txt` and an empty `images/` because every extracted JPG was a formula rendering already present as LaTeX. Verified on `paper_example`: LS20649 9→7, Batatia 29→7, Grzybowski 36→0; no real figure dropped.
+## Known limitations
+
+- **Equation-heavy papers yield empty `images/`.** Every extracted JPG was a formula rendering that `paper.md` already represents as LaTeX, so the orphan filter drops the whole set. Example: Grzybowski 2000 — 36 JPGs in → 0 retained, 0 entries in `image-map.txt`. Correct behaviour; if you need every PDF page as a raster regardless, use a different tool.
+- **Caption-before-ref formats land in the `FIG. ??` bucket.** The mapper only looks 400 chars *after* each `![](...)` for a `FIG. N` / `TABLE N` caption. Review articles and book chapters that put the caption *before* the image (`Figure 2\n![](...)`), or that scatter panel labels (`A`, `B`, `C`) between adjacent refs without a `FIG. N` prefix, are not recognised; affected refs fall into the `FIG. ??` fallback bucket and get sub-labels `(a)`, `(b)`, …, `(aa)` … Example: Luo 2023 — 27 / 37 refs in `FIG. ??`. Downstream LaTeX templates can treat `FIG. ??` as "unidentified — skip, place in appendix, or pass to the vision model below".
 
 ## Vision model
 
@@ -103,7 +106,7 @@ In LaTeX/Beamer, point `\graphicspath{{.../parsed/<name>/images/}}` and referenc
 
 ## Testing
 
-There is no automated test suite. Validate changes manually using these recipes — the `paper_example` corpus (`/home/duguex/paper_example/`) is the canonical fixture.
+There is no automated test suite. Validate changes manually using these recipes — the `paper_example` corpus (`/home/duguex/paper_example/`) is the canonical fixture. If it lives elsewhere on a future machine, set `PAPER_EXAMPLE=<path>` and substitute in the commands below.
 
 ### 1. Dry-run unit test for `standardize_output` (no GPU, ~1 s)
 
