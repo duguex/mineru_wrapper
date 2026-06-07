@@ -20,14 +20,17 @@ from itertools import groupby
 from pathlib import Path
 
 
-# Caption patterns. TABLE supports both arabic (Table 3) and roman (TABLE IV)
-# numbering — Phys Rev / Nature classics use roman.
+# Caption patterns. The number group accepts:
+#   - plain arabic:        Fig. 1, Figure 6
+#   - SI / supplementary:  Fig. S1, Fig. S11
+#   - chapter style:       Fig. 1.1, Fig. 2.3 (common in book chapters)
+# TABLE additionally accepts roman: TABLE IV (Phys Rev classics).
 FIG_PATTERN = re.compile(
-    r"(?:FIG|Figure|Fig\.?)\s*\.?\s*(\d+)",
+    r"(?:FIG|Figure|Fig\.?)\s*\.?\s*(S?\d+(?:\.\d+)?)",
     re.IGNORECASE,
 )
 TABLE_PATTERN = re.compile(
-    r"(?:TABLE|Table)\s*\.?\s*(\d+|[IVXLCDM]+)",
+    r"(?:TABLE|Table)\s*\.?\s*(S?\d+(?:\.\d+)?|[IVXLCDM]+)",
     re.IGNORECASE,
 )
 IMAGE_REF = re.compile(r'!\[\]\(images/([^)]+\.jpg)\)')
@@ -54,6 +57,29 @@ def extract_base(text: str) -> str | None:
     if not candidates:
         return None
     return min(candidates, key=lambda c: c[0])[1]
+
+
+def sub_label(i: int) -> str:
+    """Generate a sub-figure letter from a 0-based index.
+
+    0..25  → 'a'..'z'
+    26..51 → 'aa'..'az'
+    52..   → 'ba'..'zz'  (676 slots total)
+
+    The naive chr(ord('a') + i) overflows at i=26 ('{') and worse — at
+    i=36 it produces \\x85 (U+0085 NEXT LINE), which Python's splitlines()
+    treats as a line break and corrupts image-map.txt.
+    """
+    if i < 26:
+        return chr(ord('a') + i)
+    if i < 26 * 27:  # 26 + 26*26
+        first = chr(ord('a') + (i - 26) // 26)
+        second = chr(ord('a') + (i - 26) % 26)
+        return first + second
+    # >676 sub-figures in one group is almost certainly a mapper error;
+    # fall back to a clearly-marked numeric tail so the entry is still
+    # parseable and visible in image-map.txt.
+    return f"sub{i}"
 
 
 def build_image_map(md_path: Path, output_path: Path):
@@ -90,7 +116,7 @@ def build_image_map(md_path: Path, output_path: Path):
             result.append((grp[0][0], base))
         else:
             for i, (fname, _) in enumerate(grp):
-                result.append((fname, f"{base}({chr(ord('a') + i)})"))
+                result.append((fname, f"{base}({sub_label(i)})"))
 
     # Phase 3 — write output.
     lines = [

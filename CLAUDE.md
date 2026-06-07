@@ -54,9 +54,9 @@ Two scripts with a one-way dependency: `mineru_wrapper.py` calls `map_mineru_ima
 Algorithm:
 - Scans `paper.md` for `![](images/<hash>.jpg)` references in document order.
 - For each, looks 400 chars ahead for `FIG. N` / `TABLE N` caption text. When both patterns match in the window, the **earliest** one wins — avoids confusing a "see Table I" mid-paragraph reference with the real Figure caption that opens it.
-- `TABLE` accepts both arabic (`Table 3`) and roman (`TABLE IV`) numbering. Phys Rev classics need the latter.
+- Number group accepts arabic (`Fig. 1`), SI (`Fig. S11`), and chapter-style (`Fig. 1.1`); `TABLE` additionally accepts roman (`TABLE IV`). Each form is its own base, so `Fig. 1` and `Fig. S1` and `Fig. 1.1` do not merge.
 - Images without a detectable caption inherit the previous figure's base label — they join the right group as `(b)`, `(c)`, … instead of being dumped into a separate bucket.
-- After every ref has a base label, consecutive items sharing one are grouped: a run of ≥2 becomes `(a)`, `(b)`, `(c)` …; singletons keep the bare base label (no `(a)`).
+- After every ref has a base label, consecutive items sharing one are grouped: a run of ≥2 becomes `(a)`, `(b)`, `(c)` …; singletons keep the bare base label (no `(a)`). Groups ≥27 use double letters (`(aa)`, `(ab)`, … through `(zz)`); naïve `chr(ord('a')+i)` would overflow into control characters (i=36 produces `U+0085 NEXT LINE`, which Python's `splitlines()` treats as a line break and corrupts `image-map.txt`).
 - Refs that appear before any caption at all (rare) fall back to `FIG. ??`.
 - Images extracted by minerU but never embedded in `paper.md` are deleted from `images/` by `standardize_output` — these are duplicates of content paper.md already expresses structurally (LaTeX formulas, markdown tables).
 
