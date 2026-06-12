@@ -13,6 +13,8 @@ A minerU FastAPI server is available at **`http://192.168.1.130:8001`** (LAN onl
 - OpenAPI docs at http://192.168.1.130:8001/docs
 - Client script: `python3 api_client.py paper.pdf http://192.168.1.130:8001`
 
+For external access, forward a public port to this internal address.
+
 ## Common commands
 
 There is no build, lint, or external test suite. The scripts are invoked directly.
