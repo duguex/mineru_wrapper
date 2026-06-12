@@ -8,10 +8,10 @@ A pair of small scripts that wrap [minerU](https://github.com/opendatalab/MinerU
 
 ## API Server
 
-A minerU FastAPI server is available at **`http://192.168.1.130:8001`** (LAN only).
+A minerU FastAPI server is available at a configurable LAN address.
 - POST PDFs to `/file_parse` with `backend=pipeline`, `lang_list=["en"]`
-- OpenAPI docs at http://192.168.1.130:8001/docs
-- Client script: `python3 api_client.py paper.pdf http://192.168.1.130:8001`
+- OpenAPI docs at `/docs`
+- Client script: `python3 api_client.py paper.pdf http://your-server:8001`
 
 For external access, forward a public port to this internal address.
 
