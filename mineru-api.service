@@ -1,0 +1,40 @@
+[Unit]
+Description=minerU PDF parsing API server (ROCm)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+Group=YOUR_USER
+
+# Environment
+Environment=MINERU_API_HOST=0.0.0.0
+Environment=MINERU_API_PORT=8001
+Environment=MINERU_API_MAX_CONCURRENT_REQUESTS=1
+Environment=MINERU_API_OUTPUT_ROOT=/home/YOUR_USER/mineru_api_output
+Environment=MINERU_API_ENABLE_FASTAPI_DOCS=1
+Environment=HIP_VISIBLE_DEVICES=1
+Environment=ROCM_HOME=/opt/rocm-7.2.1
+Environment=ROCBLAS_TENSILE_LIBPATH=/opt/rocm-7.2.1/lib/rocblas/library/
+Environment=LD_LIBRARY_PATH=/opt/rocm-7.2.1/lib
+
+# ExecStart — use the wrapper script to ensure env is correct
+ExecStart=/home/YOUR_USER/mineru_wrapper/deploy_api.sh
+
+# Restart
+Restart=on-failure
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+# Security
+NoNewPrivileges=true
+ProtectHome=read-only
+ReadWritePaths=/home/YOUR_USER/mineru_api_output
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

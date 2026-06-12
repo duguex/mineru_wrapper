@@ -12,22 +12,22 @@ There is no build, lint, or external test suite. The scripts are invoked directl
 
 ```bash
 # One PDF, two PDFs, a directory, or any combination
-python3 /home/duguex/scripts/mineru_wrapper.py paper.pdf
-python3 /home/duguex/scripts/mineru_wrapper.py pdf_dir/
-python3 /home/duguex/scripts/mineru_wrapper.py pdf_dir/ extra.pdf
+python3 mineru_wrapper.py paper.pdf
+python3 mineru_wrapper.py pdf_dir/
+python3 mineru_wrapper.py pdf_dir/ extra.pdf
 
 # Re-parse PDFs that already have parsed/<name>/paper.md (the skip key)
-python3 /home/duguex/scripts/mineru_wrapper.py paper.pdf --force
+python3 mineru_wrapper.py paper.pdf --force
 
 # Custom output root (default: current directory)
-python3 /home/duguex/scripts/mineru_wrapper.py paper.pdf -o /tmp/out
+python3 mineru_wrapper.py paper.pdf -o /tmp/out
 ```
 
 Every run writes `output_dir/parsed/manifest.json`; when exactly one PDF is processed, the friendly path triple (`paper.md` / `images/` / `image-map.txt`) is also printed.
 
 **Image-map script standalone** (rarely needed — wrapper calls this internally):
 ```bash
-python3 /home/duguex/scripts/map_mineru_images.py -m <paper.md> -o image-map.txt
+python3 map_mineru_images.py -m <paper.md> -o image-map.txt
 ```
 
 **Logs** — every minerU invocation streams to `~/logs/mineru/run_<YYYYMMDD_HHMMSS>.log` (full stdout + stderr). The wrapper's `print()` lines appear in the terminal; the underlying minerU chatter is in the log file.
@@ -67,7 +67,7 @@ Algorithm:
 
 ## Vision model
 
-A local vision model is deployed at `192.168.1.130:8001` (llama.cpp server, Qwen3.6, multimodal). It is configured in `~/.omp/agent/config.yml` as `vision` and `designer` roles.
+A local vision model is deployed (llama.cpp server, Qwen3.6, multimodal). Set `VISION_API_URL` environment variable to point to it.
 
 **Purpose:** Spot-check ambiguous labels and resolve the rare `FIG. ??` case (refs that appear before any caption in paper.md). The vision model can look at an image and determine whether it's a FIGURE, TABLE, FORMULA, or SUBFIGURE.
 
@@ -82,7 +82,7 @@ payload = {'model':'unsloth/Qwen3.6','messages':[{'role':'user','content':[
 ]}],'max_tokens':512,'stream':False}
 with tempfile.NamedTemporaryFile(mode='w',suffix='.json',delete=False) as f:
     json.dump(payload,f); tmp=f.name
-r = subprocess.run(['curl','-s','http://192.168.1.130:8001/v1/chat/completions',
+r = subprocess.run(['curl','-s',f'{os.environ["VISION_API_URL"]}/v1/chat/completions',
     '-H','Content-Type: application/json','-d',f'@{tmp}'],
     capture_output=True,text=True,timeout=60)
 os.unlink(tmp)
@@ -106,7 +106,7 @@ In LaTeX/Beamer, point `\graphicspath{{.../parsed/<name>/images/}}` and referenc
 
 ## Testing
 
-There is no automated test suite. Validate changes manually using these recipes — the `paper_example` corpus (`/home/duguex/paper_example/`) is the canonical fixture. If it lives elsewhere on a future machine, set `PAPER_EXAMPLE=<path>` and substitute in the commands below.
+There is no automated test suite. Validate changes manually using these recipes — the `paper_example` corpus is the canonical fixture. Set `PAPER_EXAMPLE=<path>` and substitute in the commands below.
 
 ### 1. Dry-run unit test for `standardize_output` (no GPU, ~1 s)
 
@@ -116,7 +116,7 @@ The output-move logic has fine-grained edge cases (single vs batch layout, idemp
 python3 - <<'PY'
 import sys, shutil
 from pathlib import Path
-sys.path.insert(0, "/home/duguex/scripts")
+sys.path.insert(0, ".")
 from mineru_wrapper import standardize_output
 
 def make(parent, name):
@@ -175,8 +175,8 @@ The smallest PDF in `paper_example` is `Grzybowski_等_-_2000_-_Ewald_summation_
 
 ```bash
 rm -rf /tmp/mineru_smoke
-PDF="/home/duguex/paper_example/Grzybowski_等_-_2000_-_Ewald_summation_of_electrostatic_interactions_in_molecular_dynamics_of_a_three-dimensional_system_wi.pdf"
-python3 /home/duguex/scripts/mineru_wrapper.py "$PDF" -o /tmp/mineru_smoke
+PDF="$PAPER_EXAMPLE/Grzybowski_等_-_2000_-_Ewald_summation_of_electrostatic_interactions_in_molecular_dynamics_of_a_three-dimensional_system_wi.pdf"
+python3 mineru_wrapper.py "$PDF" -o /tmp/mineru_smoke
 ```
 
 Expect ~90 s, exit 0, and exactly this final layout:
@@ -199,10 +199,10 @@ This proves the skip key (`parsed/<name>/paper.md`) is the same in both write an
 
 ```bash
 mkdir -p /tmp/mineru_batch_in
-cp /home/duguex/paper_example/Grzybowski_等_*.pdf /tmp/mineru_batch_in/
-cp /home/duguex/paper_example/Batatia_等_*.pdf /tmp/mineru_batch_in/
+cp "$PAPER_EXAMPLE"/Grzybowski_等_*.pdf /tmp/mineru_batch_in/
+cp "$PAPER_EXAMPLE"/Batatia_等_*.pdf /tmp/mineru_batch_in/
 rm -rf /tmp/mineru_batch_out
-python3 /home/duguex/scripts/mineru_wrapper.py /tmp/mineru_batch_in/ -o /tmp/mineru_batch_out
+python3 mineru_wrapper.py /tmp/mineru_batch_in/ -o /tmp/mineru_batch_out
 ```
 
 Expect: `Done: 2 parsed, 0 failed, 0 skipped`, two paper dirs under `parsed/`, one `manifest.json` listing both.

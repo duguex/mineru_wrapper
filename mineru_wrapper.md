@@ -1,31 +1,101 @@
 # minerU Wrapper
 
 Single command for PDF parsing with ROCm GPU setup, image mapping, and output standardization.
+Also includes a FastAPI server deployment for remote PDF parsing.
 
 ## Requirements
 
 - minerU conda env: `torch_rocm72`
 - ROCm env script: `~/mineru-rocm/mineru-rocm-env.sh`
-- GPU 0 typically occupied (llama-server); wrapper auto-selects GPU 1
 
-## Usage
+## Local CLI Usage
 
 ```bash
 # Parse a single PDF
-python3 /home/duguex/scripts/mineru_wrapper.py paper.pdf
+python3 ~/mineru_wrapper/mineru_wrapper.py paper.pdf
 
 # Parse all PDFs in a directory, or mix files + dirs
-python3 /home/duguex/scripts/mineru_wrapper.py pdf_dir/
-python3 /home/duguex/scripts/mineru_wrapper.py pdf_dir/ extra.pdf
+python3 ~/mineru_wrapper/mineru_wrapper.py pdf_dir/
+python3 ~/mineru_wrapper/mineru_wrapper.py pdf_dir/ extra.pdf
 
 # Re-parse PDFs that already produced parsed/<name>/paper.md
-python3 /home/duguex/scripts/mineru_wrapper.py paper.pdf --force
+python3 ~/mineru_wrapper/mineru_wrapper.py paper.pdf --force
 
 # Custom output root
-python3 /home/duguex/scripts/mineru_wrapper.py paper.pdf -o /tmp/out
+python3 ~/mineru_wrapper/mineru_wrapper.py paper.pdf -o /tmp/out
 ```
 
 Default output root is the current directory (`.`).
+
+## API Server Deployment
+
+Start the minerU FastAPI server for remote PDF parsing:
+
+```bash
+# Manual start (foreground)
+~/mineru_wrapper/deploy_api.sh
+
+# Custom port
+~/mineru_wrapper/deploy_api.sh --port 8000
+
+# Localhost only
+~/mineru_wrapper/deploy_api.sh --host 127.0.0.1
+
+# Systemd service (persistent)
+sudo cp ~/mineru_wrapper/mineru-api.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now mineru-api
+```
+
+The server binds to `0.0.0.0:8001` by default.
+
+## API Usage (for other people)
+
+### Via browser
+Open http://&lt;server&gt;:8001/docs → `/file_parse` → "Try it out" → upload PDF → set `backend=pipeline`, `lang_list=["en"]` → Execute.
+
+### Via curl
+```bash
+curl -s http://<server>:8001/file_parse \
+  -F "files=@paper.pdf" \
+  -F "backend=pipeline" \
+  -F 'lang_list=["en"]' \
+  -F "return_md=true" \
+  -o result.json
+```
+
+### Via Python client (recommended)
+```bash
+# Install dependency
+pip install httpx
+
+# Sync (upload → wait → save results)
+python3 ~/mineru_wrapper/api_client.py paper.pdf http://<server>:8001
+
+# Async (submit → poll → download)
+python3 ~/mineru_wrapper/api_client.py paper.pdf http://<server>:8001 --async
+
+# Batch directory
+python3 ~/mineru_wrapper/api_client.py pdf_dir/ http://<server>:8001
+```
+
+Output is saved to `./parsed/<name>/{paper.md, images/}`.
+
+### Important
+- **Must pass `backend=pipeline`** — the default `hybrid-auto-engine` depends on CUDA vLLM (unavailable on ROCm)
+- `lang_list=["en"]` for English, `["ch"]` for Chinese
+- Server is limited to 1 concurrent request (ROCm stability)
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check |
+| `POST` | `/file_parse` | **Sync** parse (upload PDF, wait for result) |
+| `POST` | `/tasks` | **Async** submit task |
+| `GET` | `/tasks/{id}` | Query task status |
+| `GET` | `/tasks/{id}/result` | Get task result |
+| `GET` | `/docs` | Swagger interactive docs |
 
 ## Output Structure
 
@@ -34,7 +104,7 @@ output_dir/parsed/<name>/
     paper.md           structured Markdown with LaTeX formulas
     images/            extracted figures (JPG, hash filenames)
     image-map.txt      hash → figure label mapping
-                       (e.g., a1b2c3d4.jpg → FIG. 1(a)  (page 3, 1-based))
+                       (e.g., a1b2c3d4.jpg → FIG. 1(a))
 
 output_dir/parsed/manifest.json   per-paper {name, pdf_path, paper_md, status}
 ```
@@ -55,13 +125,3 @@ The wrapper:
 ## Logs
 
 Every minerU invocation writes a full stdout+stderr log to `~/logs/mineru/run_<YYYYMMDD_HHMMSS>.log`. The wrapper's own `print()` lines go only to the terminal.
-
-## Sanity check
-
-Smoke-test against a small PDF (~90 s):
-
-```bash
-python3 /home/duguex/scripts/mineru_wrapper.py /home/duguex/paper_example/LS20649.pdf -o /tmp/out
-```
-
-Expect `paper.md`, `images/`, `image-map.txt` under `/tmp/out/parsed/LS20649/`, plus a manifest listing one paper with `"status": "parsed"`. See `CLAUDE.md` for the full test catalog.
