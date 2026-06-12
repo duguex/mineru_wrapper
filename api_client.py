@@ -2,9 +2,9 @@
 """minerU API client — send PDFs to a remote minerU FastAPI server.
 
 Usage:
-    python3 api_client.py paper.pdf http://<server>:8001
-    python3 api_client.py paper.pdf http://<server>:8001 -o /tmp/out
-    python3 api_client.py dir/ http://<server>:8001 --async
+    python3 api_client.py paper.pdf http://<server>:<port>
+    python3 api_client.py paper.pdf http://<server>:<port> -o /tmp/out
+    python3 api_client.py dir/ http://<server>:<port> --async
 
 The server must use the `pipeline` backend (ROCm limitation, not hybrid).
 """
@@ -22,7 +22,7 @@ import httpx
 def main():
     parser = argparse.ArgumentParser(description="minerU API client")
     parser.add_argument("path", help="PDF file or directory of PDFs")
-    parser.add_argument("url", help="Server base URL (e.g. http://<server>:8001)")
+    parser.add_argument("url", help="Server base URL (e.g. http://your-server:<port>)")
     parser.add_argument("-o", "--output", default="./parsed",
                         help="Output directory (default: ./parsed)")
     parser.add_argument("--async", dest="use_async", action="store_true",

@@ -47,18 +47,18 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now mineru-api
 ```
 
-The server binds to `0.0.0.0:8001` by default.
+The server binds to `0.0.0.0:<port>` by default.
 
 ## API Usage (for other people)
 
-API server is available at a configurable LAN address (port 8001).
+API server is available at a configurable LAN address.
 
 ### Via browser
-Open `http://<server>:8001/docs` → `/file_parse` → "Try it out" → upload PDF → set `backend=pipeline`, `lang_list=["en"]` → Execute.
+Open `http://<server>:<port>/docs` → `/file_parse` → "Try it out" → upload PDF → set `backend=pipeline`, `lang_list=["en"]` → Execute.
 
 ### Via curl
 ```bash
-curl -s http://<server>:8001/file_parse \
+curl -s http://<server>:<port>/file_parse \
   -F "files=@paper.pdf" \
   -F "backend=pipeline" \
   -F 'lang_list=["en"]' \
@@ -72,13 +72,13 @@ curl -s http://<server>:8001/file_parse \
 pip install httpx
 
 # Sync (upload → wait → save results)
-python3 ~/mineru_wrapper/api_client.py paper.pdf http://<server>:8001
+python3 ~/mineru_wrapper/api_client.py paper.pdf http://<server>:<port>
 
 # Async (submit → poll → download)
-python3 ~/mineru_wrapper/api_client.py paper.pdf http://<server>:8001 --async
+python3 ~/mineru_wrapper/api_client.py paper.pdf http://<server>:<port> --async
 
 # Batch directory
-python3 ~/mineru_wrapper/api_client.py pdf_dir/ http://<server>:8001
+python3 ~/mineru_wrapper/api_client.py pdf_dir/ http://<server>:<port>
 ```
 
 Output is saved to `./parsed/<name>/{paper.md, images/}`.
