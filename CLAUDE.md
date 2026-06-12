@@ -6,6 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A pair of small scripts that wrap [minerU](https://github.com/opendatalab/MinerU) for PDF → structured Markdown parsing on a ROCm GPU box. The wrapper hides ROCm env setup, GPU selection, batch staging, and minerU's noisy auxiliary output — one positional CLI that accepts any mix of PDF files and directories.
 
+## API Server
+
+A minerU FastAPI server is available at **`http://192.168.1.130:8001`** (LAN only).
+- POST PDFs to `/file_parse` with `backend=pipeline`, `lang_list=["en"]`
+- OpenAPI docs at http://192.168.1.130:8001/docs
+- Client script: `python3 api_client.py paper.pdf http://192.168.1.130:8001`
+
 ## Common commands
 
 There is no build, lint, or external test suite. The scripts are invoked directly.

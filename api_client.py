@@ -2,9 +2,9 @@
 """minerU API client — send PDFs to a remote minerU FastAPI server.
 
 Usage:
-    python3 api_client.py paper.pdf http://<server>:8001
-    python3 api_client.py paper.pdf http://<server>:8001 -o /tmp/out
-    python3 api_client.py dir/ http://<server>:8001 --async
+    python3 api_client.py paper.pdf http://192.168.1.130:8001
+    python3 api_client.py paper.pdf http://192.168.1.130:8001 -o /tmp/out
+    python3 api_client.py dir/ http://192.168.1.130:8001 --async
 
 The server must use the `pipeline` backend (ROCm limitation, not hybrid).
 """

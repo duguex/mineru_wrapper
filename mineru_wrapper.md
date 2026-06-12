@@ -51,12 +51,14 @@ The server binds to `0.0.0.0:8001` by default.
 
 ## API Usage (for other people)
 
+API server is deployed at **`http://192.168.1.130:8001`** (LAN only, port 8001).
+
 ### Via browser
-Open http://&lt;server&gt;:8001/docs → `/file_parse` → "Try it out" → upload PDF → set `backend=pipeline`, `lang_list=["en"]` → Execute.
+Open http://192.168.1.130:8001/docs → `/file_parse` → "Try it out" → upload PDF → set `backend=pipeline`, `lang_list=["en"]` → Execute.
 
 ### Via curl
 ```bash
-curl -s http://<server>:8001/file_parse \
+curl -s http://192.168.1.130:8001/file_parse \
   -F "files=@paper.pdf" \
   -F "backend=pipeline" \
   -F 'lang_list=["en"]' \
@@ -70,13 +72,13 @@ curl -s http://<server>:8001/file_parse \
 pip install httpx
 
 # Sync (upload → wait → save results)
-python3 ~/mineru_wrapper/api_client.py paper.pdf http://<server>:8001
+python3 ~/mineru_wrapper/api_client.py paper.pdf http://192.168.1.130:8001
 
 # Async (submit → poll → download)
-python3 ~/mineru_wrapper/api_client.py paper.pdf http://<server>:8001 --async
+python3 ~/mineru_wrapper/api_client.py paper.pdf http://192.168.1.130:8001 --async
 
 # Batch directory
-python3 ~/mineru_wrapper/api_client.py pdf_dir/ http://<server>:8001
+python3 ~/mineru_wrapper/api_client.py pdf_dir/ http://192.168.1.130:8001
 ```
 
 Output is saved to `./parsed/<name>/{paper.md, images/}`.
