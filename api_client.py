@@ -22,7 +22,7 @@ import httpx
 def main():
     parser = argparse.ArgumentParser(description="minerU API client")
     parser.add_argument("path", help="PDF file or directory of PDFs")
-    parser.add_argument("url", help="Server base URL (e.g. http://your-server:<port>)")
+    parser.add_argument("url", help="Server base URL (e.g. http://<server>:<port>)")
     parser.add_argument("-o", "--output", default="./parsed",
                         help="Output directory (default: ./parsed)")
     parser.add_argument("--async", dest="use_async", action="store_true",
