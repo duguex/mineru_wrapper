@@ -74,11 +74,14 @@ pip install httpx
 # Sync (upload → wait → save results)
 python3 ~/mineru_wrapper/api_client.py paper.pdf http://<server>:<port>
 
-# Async (submit → poll → download)
-python3 ~/mineru_wrapper/api_client.py paper.pdf http://<server>:<port> --async
+# Multiple PDFs in one batch
+python3 ~/mineru_wrapper/api_client.py a.pdf b.pdf http://<server>:<port> -o /tmp/out
 
-# Batch directory
-python3 ~/mineru_wrapper/api_client.py pdf_dir/ http://<server>:<port>
+# Async (submit → poll → download)
+python3 ~/mineru_wrapper/api_client.py pdf_dir/ http://<server>:<port> --async
+
+# Mix files and directories
+python3 ~/mineru_wrapper/api_client.py pdf_dir/ extra.pdf http://<server>:<port>
 ```
 
 Output is saved to `./parsed/<name>/{paper.md, images/}`.
