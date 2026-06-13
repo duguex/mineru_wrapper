@@ -48,20 +48,26 @@ mkdir -p "$OUTPUT_ROOT"
 # Enable Swagger docs
 export MINERU_API_ENABLE_FASTAPI_DOCS=1
 
-echo "=== minerU API Server ==="
-echo "  Host:        $HOST"
-echo "  Port:        $PORT"
-echo "  Output root: $OUTPUT_ROOT"
-echo "  GPU device:  $HIP_VISIBLE_DEVICES"
-echo "  Concurrency: $MINERU_API_MAX_CONCURRENT_REQUESTS"
-echo "  Backend:     pipeline (mandatory for ROCm)"
-echo ""
-echo "API docs:  http://$HOST:$PORT/docs"
-echo "Health:    http://$HOST:$PORT/health"
-echo ""
+# Log directory with timestamp (never overwritten)
+LOG_DIR="${HOME}/logs/mineru"
+mkdir -p "$LOG_DIR"
+LOG_FILE="${LOG_DIR}/api_$(date +%Y%m%d_%H%M%S).log"
 
-# Launch the API server
+echo "=== minerU API Server ===" | tee -a "$LOG_FILE"
+echo "  Host:        $HOST" | tee -a "$LOG_FILE"
+echo "  Port:        $PORT" | tee -a "$LOG_FILE"
+echo "  Output root: $OUTPUT_ROOT" | tee -a "$LOG_FILE"
+echo "  GPU device:  $HIP_VISIBLE_DEVICES" | tee -a "$LOG_FILE"
+echo "  Concurrency: $MINERU_API_MAX_CONCURRENT_REQUESTS" | tee -a "$LOG_FILE"
+echo "  Backend:     pipeline (mandatory for ROCm)" | tee -a "$LOG_FILE"
+echo "" | tee -a "$LOG_FILE"
+echo "Log: $LOG_FILE" | tee -a "$LOG_FILE"
+echo "API docs:  http://$HOST:$PORT/docs" | tee -a "$LOG_FILE"
+echo "Health:    http://$HOST:$PORT/health" | tee -a "$LOG_FILE"
+echo "" | tee -a "$LOG_FILE"
+
+# Launch the API server (append all output to log)
 # NOTE: clients MUST specify backend=pipeline (the default hybrid-auto-engine
 # depends on CUDA vLLM which is unavailable on ROCm).
 exec conda run -n torch_rocm72 --no-capture-output \
-    mineru-api --host "$HOST" --port "$PORT"
+    mineru-api --host "$HOST" --port "$PORT" >> "$LOG_FILE" 2>&1
