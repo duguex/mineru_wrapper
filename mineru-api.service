@@ -11,10 +11,10 @@ Group=YOUR_USER
 # Environment
 Environment=MINERU_API_HOST=0.0.0.0
 Environment=MINERU_API_PORT=8001
-Environment=MINERU_API_MAX_CONCURRENT_REQUESTS=1
-Environment=MINERU_API_OUTPUT_ROOT=/home/YOUR_USER/mineru_api_output
+Environment=MINERU_API_MAX_CONCURRENT_REQUESTS=2
+Environment=MINERU_API_OUTPUT_ROOT=/mnt/shared/mineru_api_output
 Environment=MINERU_API_ENABLE_FASTAPI_DOCS=1
-Environment=HIP_VISIBLE_DEVICES=1
+Environment=HIP_VISIBLE_DEVICES=0,1
 Environment=ROCM_HOME=/opt/rocm-7.2.1
 Environment=ROCBLAS_TENSILE_LIBPATH=/opt/rocm-7.2.1/lib/rocblas/library/
 Environment=LD_LIBRARY_PATH=/opt/rocm-7.2.1/lib
@@ -33,7 +33,7 @@ StandardError=journal
 # Security
 NoNewPrivileges=true
 ProtectHome=read-only
-ReadWritePaths=/home/YOUR_USER/mineru_api_output
+ReadWritePaths=/mnt/shared/mineru_api_output
 PrivateTmp=true
 
 [Install]

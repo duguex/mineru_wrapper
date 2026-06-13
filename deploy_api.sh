@@ -13,7 +13,7 @@ set -eo pipefail  # no -u: mineru-rocm-env.sh uses unbound LD_LIBRARY_PATH
 # ---- Config ------------------------------------------------------------
 HOST="${MINERU_API_HOST:-0.0.0.0}"
 PORT="${MINERU_API_PORT:-8001}"
-OUTPUT_ROOT="${MINERU_API_OUTPUT_ROOT:-$HOME/mineru_api_output}"
+OUTPUT_ROOT="${MINERU_API_OUTPUT_ROOT:-/mnt/shared/mineru_api_output}"
 # ------------------------------------------------------------------------
 
 # Parse CLI overrides
@@ -35,11 +35,11 @@ else
     echo "Warning: $ENV_SCRIPT not found" >&2
 fi
 
-# Override: GPU 0 is occupied by ollama/llama-server, use GPU 1
-export HIP_VISIBLE_DEVICES=1
+# Use both GPUs
+export HIP_VISIBLE_DEVICES=0,1
 
-# ROCm stability: limit concurrent parsing to 1
-export MINERU_API_MAX_CONCURRENT_REQUESTS=1
+# One concurrent request per GPU
+export MINERU_API_MAX_CONCURRENT_REQUESTS=2
 
 # Output root
 export MINERU_API_OUTPUT_ROOT="$OUTPUT_ROOT"
