@@ -1,12 +1,17 @@
 #!/bin/bash
-# deploy_api.sh — Start minerU FastAPI server for ROCm (persistent deployment)
+# deploy_api.sh — Start minerU FastAPI server (single-process mode)
+#
+# All GPUs in HIP_VISIBLE_DEVICES are visible to the single process.
+# minerU's internal scheduling decides which GPU to use (typically GPU 0).
+#
+# For per-GPU worker isolation + load balancing, use deploy_router.sh instead.
 #
 # Usage:
 #   ./deploy_api.sh                    # start on :8001, bind 0.0.0.0
 #   ./deploy_api.sh --port 8000        # custom port
 #   ./deploy_api.sh --host 127.0.0.1   # localhost only
+#   ./deploy_api.sh --worker-conc 1    # concurrent requests (default 2)
 #
-# Clients send PDFs via HTTP multipart; see api_client.py for examples.
 
 set -eo pipefail  # no -u: mineru-rocm-env.sh uses unbound LD_LIBRARY_PATH
 
@@ -21,6 +26,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --host) HOST="$2"; shift 2 ;;
         --port) PORT="$2"; shift 2 ;;
+        --worker-conc) MINERU_API_MAX_CONCURRENT_REQUESTS="$2"; shift 2 ;;
         --output-root) OUTPUT_ROOT="$2"; shift 2 ;;
         *) echo "Unknown: $1"; exit 1 ;;
     esac
@@ -35,8 +41,9 @@ else
     echo "Warning: $ENV_SCRIPT not found" >&2
 fi
 
-# Use both GPUs
-export HIP_VISIBLE_DEVICES=0,1
+# Single GPU (minerU's single process uses GPU 0 by default)
+# For multi-GPU load balancing, use deploy_router.sh instead.
+export HIP_VISIBLE_DEVICES=0
 
 # One concurrent request per GPU
 export MINERU_API_MAX_CONCURRENT_REQUESTS=2

@@ -27,16 +27,17 @@ python3 ~/mineru_wrapper/mineru_wrapper.py paper.pdf -o /tmp/out
 
 Default output root is the current directory (`.`).
 
-## API Server Deployment
+## API Server Deployment — Single-Process Mode
 
-Start the minerU FastAPI server for remote PDF parsing:
+Starts one `mineru-api` process with both GPUs visible. minerU's internal
+scheduling decides which GPU to use (typically GPU 0).
 
 ```bash
 # Manual start (foreground)
 ~/mineru_wrapper/deploy_api.sh
 
-# Custom port
-~/mineru_wrapper/deploy_api.sh --port 8000
+# Custom port or concurrency
+~/mineru_wrapper/deploy_api.sh --port 8000 --worker-conc 4
 
 # Localhost only
 ~/mineru_wrapper/deploy_api.sh --host 127.0.0.1
@@ -48,6 +49,45 @@ sudo systemctl enable --now mineru-api
 ```
 
 The server binds to `0.0.0.0:<port>` by default.
+
+## API Server Deployment — Router Mode (multi-GPU)
+
+Starts `mineru-router` which spawns one `mineru-api` worker per GPU,
+isolates each via `HIP_VISIBLE_DEVICES=<gpu_id>`, and load-balances.
+Recommended for throughput (see benchmark below).
+
+```bash
+# Manual start (foreground)
+~/mineru_wrapper/deploy_router.sh
+
+# Custom port or per-worker concurrency
+~/mineru_wrapper/deploy_router.sh --port 8002 --worker-conc 2
+
+# Localhost only
+~/mineru_wrapper/deploy_router.sh --host 127.0.0.1
+
+# Systemd service (persistent)
+sudo cp ~/mineru_wrapper/mineru-router.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now mineru-router
+```
+
+The router must have the `HIP_VISIBLE_DEVICES` patch applied.
+The upstream router isolates workers via `CUDA_VISIBLE_DEVICES`, which ROCm ignores.
+A local patch (`mineru/cli/router.py:425-430`) also sets `HIP_VISIBLE_DEVICES`
+per worker. See [CLAUDE.md](CLAUDE.md) for the code.
+
+Benchmark: `router-2gpu-c2per` (concurrency=2 per worker) achieves **3.75× throughput**
+vs single-GPU sequential, zero failures. See [bench_results.md](bench_results.md).
+
+## Choosing Between Modes
+
+| Aspect | Single API (`deploy_api.sh`) | Router (`deploy_router.sh`) |
+|--------|------------------------------|----------------------------|
+| GPUs used | 1 (GPU 0 by default) | Both (one worker per GPU) |
+| Throughput | 1.16× baseline | **3.75× baseline** |
+| Complexity | Simpler | One extra process |
+| Use case | Light load / dev | Production / high throughput |
 
 ## API Usage (for other people)
 
@@ -90,6 +130,7 @@ Output is saved to `./parsed/<name>/{paper.md, images/}`.
 - **Must pass `backend=pipeline`** — the default `hybrid-auto-engine` depends on CUDA vLLM (unavailable on ROCm)
 - `lang_list=["en"]` for English, `["ch"]` for Chinese
 - Server is limited to 1 concurrent request (ROCm stability)
+
 
 ## API Endpoints
 

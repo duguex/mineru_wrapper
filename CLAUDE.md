@@ -113,6 +113,41 @@ output_dir/parsed/manifest.json   (always written, one entry per processed paper
 
 In LaTeX/Beamer, point `\graphicspath{{.../parsed/<name>/images/}}` and reference images by their hash filename (`a1b2c3d4.jpg`); the mapping from hash → caption label is what `image-map.txt` records.
 
+## GPU Concurrency & mineru-router
+
+### ROCm GPU isolation fix
+
+`mineru-router` isolates workers via `CUDA_VISIBLE_DEVICES`, which ROCm ignores.
+A local patch at `mineru/cli/router.py:425-430` also sets `HIP_VISIBLE_DEVICES`:
+
+```python
+if self.gpu is not None:
+    visible_env = get_local_device_visible_env_name()
+    env[visible_env] = str(self.gpu)
+    # ROCm compatibility: HIP_VISIBLE_DEVICES alongside CUDA_VISIBLE_DEVICES
+    if visible_env == "CUDA_VISIBLE_DEVICES":
+        env["HIP_VISIBLE_DEVICES"] = str(self.gpu)
+```
+
+### Starting the router
+
+```bash
+export ROCM_HOME=/opt/rocm-7.2.1
+export ROCBLAS_TENSILE_LIBPATH=/opt/rocm-7.2.1/lib/rocblas/library/
+export LD_LIBRARY_PATH=/opt/rocm-7.2.1/lib
+export HIP_VISIBLE_DEVICES=0,1
+export MINERU_API_MAX_CONCURRENT_REQUESTS=2
+
+conda run -n torch_rocm72 --no-capture-output \
+  mineru-router --host 0.0.0.0 --port 8002 --local-gpus=auto
+```
+
+### Benchmark results
+
+See `bench_results.md`. Optimal config: router, 2 GPUs, concurrency=2 per worker
+(3.75× throughput vs single-GPU sequential, zero failures).
+`bench_concurrency.py` is the standalone benchmark tool.
+
 ## Testing
 
 There is no automated test suite. Validate changes manually using these recipes — the `paper_example` corpus is the canonical fixture. Set `PAPER_EXAMPLE=<path>` and substitute in the commands below.
