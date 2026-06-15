@@ -9,8 +9,6 @@ Outputs a markdown row suitable for the comparison table.
 import argparse
 import asyncio
 import json
-import os
-import statistics
 import sys
 import time
 from pathlib import Path
@@ -66,9 +64,8 @@ async def run_bench(pdf_dir: str, base_url: str, concurrency: int) -> dict:
 
         async def worker(pdf: Path, idx: int) -> None:
             results[idx] = await bounded(pdf, idx)
-
         tasks = [asyncio.create_task(worker(pdf, i)) for i, pdf in enumerate(pdfs)]
-        await asyncio.gather(*tasks)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
         t_total = time.monotonic() - t_start
 
@@ -102,47 +99,17 @@ async def run_bench(pdf_dir: str, base_url: str, concurrency: int) -> dict:
     }
 
 
-def print_table_row(label: str, stats: dict, baseline_time: float | None = None) -> None:
-    """Print one markdown table row."""
-    if "error" in stats:
-        print(f"| {label:<22} | {stats['concurrency']:<11} | FAILED |")
-        return
-
-    eff = ""
-    if baseline_time is not None and stats["total_time"] > 0:
-        # Efficiency = baseline_total / this_total * num_gpus_used
-        # For baseline: num_gpus=1
-        # For router configs: num_gpus=2
-        # We'll compute efficiency in the aggregation step
-        pass
-
-    total = stats["total_time"]
-    tmin = stats["min_time"]
-    tmed = stats["median_time"]
-    tmax = stats["max_time"]
-    rps = stats["req_per_sec"]
-
-    print(f"| {label:<22} | {stats['concurrency']:<11} | {total:<6.1f}s | {tmin:<5.1f}s | {tmed:<6.1f}s | {tmax:<5.1f}s | {rps:<6.3f} |")
-
 
 def main():
     parser = argparse.ArgumentParser(description="GPU concurrency benchmark")
     parser.add_argument("pdf_dir", help="Directory containing PDF files")
     parser.add_argument("base_url", help="Server base URL")
     parser.add_argument("--concurrency", type=int, default=1, help="Max concurrent requests")
-    parser.add_argument("--label", default="", help="Config label for output row")
-    parser.add_argument("--json", action="store_true", help="Output JSON instead of table row")
+    parser.add_argument("--json", action="store_true", help="Output JSON")
     args = parser.parse_args()
 
     stats = asyncio.run(run_bench(args.pdf_dir, args.base_url.rstrip("/"), args.concurrency))
-
     if args.json:
         print(json.dumps(stats))
-    elif args.label:
-        print_table_row(args.label, stats)
     else:
         print(json.dumps(stats, indent=2))
-
-
-if __name__ == "__main__":
-    main()

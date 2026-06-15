@@ -33,7 +33,7 @@ StandardError=journal
 # Security
 NoNewPrivileges=true
 ProtectHome=read-only
-ReadWritePaths=/mnt/shared/mineru_api_output
+ReadWritePaths=/mnt/shared/mineru_api_output /mnt/shared/mineru_logs
 PrivateTmp=true
 
 [Install]

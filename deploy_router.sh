@@ -55,8 +55,8 @@ mkdir -p "$OUTPUT_ROOT"
 # Disable Swagger on workers (router has its own docs)
 export MINERU_API_ENABLE_FASTAPI_DOCS=0
 
-# Log directory
-LOG_DIR="${HOME}/logs/mineru"
+# Log directory (must be outside $HOME for systemd ProtectHome=read-only)
+LOG_DIR="${MINERU_LOG_DIR:-/mnt/shared/mineru_logs}"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_DIR}/router_$(date +%Y%m%d_%H%M%S).log"
 

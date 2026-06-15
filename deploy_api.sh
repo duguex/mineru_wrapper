@@ -18,6 +18,7 @@ set -eo pipefail  # no -u: mineru-rocm-env.sh uses unbound LD_LIBRARY_PATH
 # ---- Config ------------------------------------------------------------
 HOST="${MINERU_API_HOST:-0.0.0.0}"
 PORT="${MINERU_API_PORT:-8001}"
+WORKER_CONCURRENCY="${MINERU_API_MAX_CONCURRENT_REQUESTS:-2}"
 OUTPUT_ROOT="${MINERU_API_OUTPUT_ROOT:-/mnt/shared/mineru_api_output}"
 # ------------------------------------------------------------------------
 
@@ -46,7 +47,7 @@ fi
 export HIP_VISIBLE_DEVICES=0
 
 # One concurrent request per GPU
-export MINERU_API_MAX_CONCURRENT_REQUESTS=2
+export MINERU_API_MAX_CONCURRENT_REQUESTS="$WORKER_CONCURRENCY"
 
 # Output root
 export MINERU_API_OUTPUT_ROOT="$OUTPUT_ROOT"
@@ -55,8 +56,8 @@ mkdir -p "$OUTPUT_ROOT"
 # Enable Swagger docs
 export MINERU_API_ENABLE_FASTAPI_DOCS=1
 
-# Log directory with timestamp (never overwritten)
-LOG_DIR="${HOME}/logs/mineru"
+# Log directory (must be outside $HOME for systemd ProtectHome=read-only)
+LOG_DIR="${MINERU_LOG_DIR:-/mnt/shared/mineru_logs}"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_DIR}/api_$(date +%Y%m%d_%H%M%S).log"
 
