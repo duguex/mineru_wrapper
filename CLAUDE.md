@@ -30,6 +30,9 @@ python3 mineru_wrapper.py paper.pdf --force
 
 # Custom output root (default: current directory)
 python3 mineru_wrapper.py paper.pdf -o /tmp/out
+
+# Dual-GPU (splits PDFs across GPUs in parallel)
+python3 mineru_wrapper.py pdf_dir/ --gpus 0,1
 ```
 
 Every run writes `output_dir/parsed/manifest.json`; when exactly one PDF is processed, the friendly path triple (`paper.md` / `images/` / `image-map.txt`) is also printed.
@@ -50,7 +53,7 @@ Two scripts with a one-way dependency: `mineru_wrapper.py` calls `map_mineru_ima
 1. **Discovery** (`collect_pdfs`) — resolve positional args to a `[(derived_name, abs_path)]` list. Mixes files and directories, deduplicates by derived name, warns on non-PDF inputs.
 2. **Skip filter** — drop any PDF that already has `output_dir/parsed/<name>/paper.md`, unless `--force`. The same rule applies whether one or many PDFs are passed.
 3. **Staging** — symlink each PDF into a `TemporaryDirectory` as `<derived_name>.pdf`. minerU honours its input filename when naming output dirs, so without this step a PDF like `Foo - 2020 - bar.pdf` would land in `Foo_-_2020_-_bar/auto/` while the wrapper looks under `Foo_2020_bar/auto/`.
-4. **Env bootstrap** (`run_mineru`) — sources `~/mineru-rocm/mineru-rocm-env.sh`, pins `HIP_VISIBLE_DEVICES=1` (GPU 0 is occupied by llama-server), sets `MINERU_API_MAX_CONCURRENT_REQUESTS=1`, then shells out to `conda run -n torch_rocm72 mineru -p <staged-tmpdir> -o <output> -b pipeline -m auto -l en`. On failure, retries any PDFs whose `auto/` dir is missing.
+4. **Env bootstrap** (`run_mineru`) — sources `~/mineru-rocm/mineru-rocm-env.sh`, pins `HIP_VISIBLE_DEVICES` to the requested GPU, sets `MINERU_API_MAX_CONCURRENT_REQUESTS=1`, then shells out to `conda run -n torch_rocm72 mineru -p <staged-tmpdir> -o <output> -b pipeline -m auto -l en`. Accepts a `gpu` parameter (default `"1"`). When `--gpus 0,1` is passed, papers are split evenly across GPUs (round-robin: GPU 0 gets even-indexed, GPU 1 gets odd-indexed) and run in parallel via `ThreadPoolExecutor`. On failure, retries any PDFs whose `auto/` dir is missing.
 5. **Post-processing** — for each paper: `generate_image_map` (subprocess to `map_mineru_images.py`) then `standardize_output`.
 6. **Manifest** — always written to `<output>/parsed/manifest.json` with per-paper `{name, pdf_path, paper_md, status}`.
 
@@ -71,8 +74,15 @@ Algorithm:
 
 ## Known limitations
 
+### minerU / parser limitations
+
 - **Equation-heavy papers yield empty `images/`.** Every extracted JPG was a formula rendering that `paper.md` already represents as LaTeX, so the orphan filter drops the whole set. Example: Grzybowski 2000 — 36 JPGs in → 0 retained, 0 entries in `image-map.txt`. Correct behaviour; if you need every PDF page as a raster regardless, use a different tool.
 - **Caption-before-ref formats land in the `FIG. ??` bucket.** The mapper only looks 400 chars *after* each `![](...)` for a `FIG. N` / `TABLE N` caption. Review articles and book chapters that put the caption *before* the image (`Figure 2\n![](...)`), or that scatter panel labels (`A`, `B`, `C`) between adjacent refs without a `FIG. N` prefix, are not recognised; affected refs fall into the `FIG. ??` fallback bucket and get sub-labels `(a)`, `(b)`, …, `(aa)` … Example: Luo 2023 — 27 / 37 refs in `FIG. ??`. Downstream LaTeX templates can treat `FIG. ??` as "unidentified — skip, place in appendix, or pass to the vision model below".
+
+### ROCm / deployment
+
+- **`--local-gpus=auto` only detects 1 GPU on ROCm.** `mineru-router` uses CUDA_VISIBLE_DEVICES for GPU counting, which ROCm ignores. Always pass explicit GPU list: `--local-gpus=0,1`. `deploy_router.sh` defaults to `0,1` for this reason.
+- **`exec` in deploy scripts kills router when parent exits.** `deploy_router.sh` no longer uses `exec` — start with `nohup bash deploy_router.sh &` for background persistence. The router log goes to `/mnt/shared/mineru_logs/`.
 
 ## Vision model
 
@@ -131,6 +141,26 @@ if self.gpu is not None:
 
 ### Starting the router
 
+Use `deploy_router.sh`. **Do not** use `--local-gpus=auto` on ROCm — it only detects 1 GPU.
+Must pass explicit GPU list: `--local-gpus=0,1` (default in `deploy_router.sh`).
+
+```bash
+# Start router in background (use nohup — the script no longer uses exec)
+nohup bash deploy_router.sh --host 127.0.0.1 --worker-conc 2 &
+
+# Verify both workers are healthy
+curl -s http://127.0.0.1:8002/health | python3 -c "
+import json, sys; h=json.load(sys.stdin)
+for s in h['servers']: print(f'{s[\"server_id\"]} gpu={s[\"gpu\"]} healthy={s[\"healthy\"]}')
+"
+```
+
+Router provides **dynamic least-loaded scheduling**: each request goes to the worker with
+lowest `(queued + processing + pending) / max_concurrent_requests` ratio, randomized among ties.
+Much better than static round-robin for mixed-size workloads.
+
+### Router environment
+
 ```bash
 export ROCM_HOME=/opt/rocm-7.2.1
 export ROCBLAS_TENSILE_LIBPATH=/opt/rocm-7.2.1/lib/rocblas/library/
@@ -139,8 +169,45 @@ export HIP_VISIBLE_DEVICES=0,1
 export MINERU_API_MAX_CONCURRENT_REQUESTS=2
 
 conda run -n torch_rocm72 --no-capture-output \
-  mineru-router --host 0.0.0.0 --port 8002 --local-gpus=auto
+  mineru-router --host 0.0.0.0 --port 8002 --local-gpus=0,1
 ```
+
+### Batch processing (large-scale, via router)
+
+For large PDF corpora (hundreds+), use `batch_parse.py` which sends PDFs concurrently
+to the router and provides checkpoint/resume:
+
+```bash
+# Start router first (see above), then:
+python3 batch_parse.py \
+  --src /path/to/pdf_dir \
+  --output /mnt/shared/batch_out \
+  --url http://127.0.0.1:8002 \
+  --concurrency 4 \
+  --max-retries 3
+
+# Monitor progress in another terminal:
+watch -n 10 python3 batch_status.py /mnt/shared/batch_out/parsed/
+```
+
+Features:
+- Sends one PDF per `/file_parse` request, concurrent via asyncio Semaphore
+- Saves `paper.md` + `images/` from API response, then runs `map_mineru_images.py` + orphan cleanup
+- Maintains `progress.json` checkpoint — Ctrl+C safe, re-run to resume
+- Failed PDFs retried with exponential backoff (configurable `--max-retries`, `--retry-delay`)
+- Writes `manifest.json` on completion
+- `batch_status.py` shows progress bar, ETA, throughput, recent failures
+
+For small batches or single PDFs, use `mineru_wrapper.py` directly — no router needed.
+
+### Recommended configs
+
+| Scenario | Tool | Command |
+|----------|------|---------|
+| Single PDF | `mineru_wrapper.py` | `mineru_wrapper.py paper.pdf` |
+| Small batch (≤20) | `mineru_wrapper.py` | `mineru_wrapper.py dir/ --gpus 0,1` |
+| Large batch (100+) | router + `batch_parse.py` | `deploy_router.sh` + `batch_parse.py` |
+| Remote / API access | `api_client.py` | `python3 api_client.py paper.pdf http://<host>:<port>` |
 
 ### Benchmark results
 

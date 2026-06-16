@@ -53,7 +53,7 @@ def mineru_available() -> bool:
     return result.returncode == 0
 
 
-def run_mineru(input_path: Path, output_dir: Path) -> bool:
+def run_mineru(input_path: Path, output_dir: Path, gpu: str = "1") -> bool:
     """Run minerU with persistent logging. Output streams to both terminal and log file."""
     log_dir = Path.home() / "logs" / "mineru"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -63,7 +63,7 @@ def run_mineru(input_path: Path, output_dir: Path) -> bool:
     cmd = (
         f"export MINERU_API_MAX_CONCURRENT_REQUESTS=1 && "
         f"source {shlex.quote(env_script)} && "
-        f"export HIP_VISIBLE_DEVICES=1 && "
+        f"export HIP_VISIBLE_DEVICES={gpu} && "
         f"export PATH=/opt/conda/bin:$PATH && "
         f"conda run -n torch_rocm72 mineru -p {shlex.quote(str(input_path))} "
         f"-o {shlex.quote(str(output_dir))} -b pipeline -m auto -l en"
@@ -227,6 +227,8 @@ def main():
                         help="Output root directory (default: current directory)")
     parser.add_argument("--force", action="store_true",
                         help="Re-parse already-processed PDFs")
+    parser.add_argument("--gpus", default="1",
+                        help="GPU(s) to use, CSV e.g. '1' or '0,1' (default: 1)")
     args = parser.parse_args()
 
     all_pdfs = collect_pdfs(args.pdfs)
@@ -258,19 +260,51 @@ def main():
     # vs derived-name mismatch that breaks special-character filenames).
     # minerU accepts a directory as input regardless of how many PDFs are
     # in it, so single (N=1) is just batch with one symlink.
-    with tempfile.TemporaryDirectory(prefix="mineru_") as tmpdir:
-        staged = [(name, Path(tmpdir) / f"{name}.pdf") for name, _ in papers]
-        for (_, src), (_, dst) in zip(papers, staged):
-            os.symlink(os.path.abspath(src), dst)
+    # Multi-GPU: split papers evenly, stage per GPU in separate tmpdirs,
+    # run mineru processes in parallel via ThreadPoolExecutor.
+    gpus = [g.strip() for g in args.gpus.split(",")]
+    gpu_groups = []
+    for i, gpu in enumerate(gpus):
+        chunk = papers[i::len(gpus)]
+        if chunk:
+            gpu_groups.append((gpu, chunk))
 
-        print(f"\nParsing {len(papers)} PDF(s)...")
-        batch_ok = run_mineru(Path(tmpdir), output_dir)
-        if not batch_ok:
-            print("  minerU run failed, retrying individually...")
-            for name, staged_pdf in staged:
-                if not (output_dir / name / "auto").is_dir():
-                    print(f"  Retrying {name}...")
-                    run_mineru(staged_pdf, output_dir)
+    print(f"\nParsing {len(papers)} PDF(s) on {args.gpus}...")
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    with tempfile.TemporaryDirectory(prefix="mineru_") as tmpdir_root:
+        tmpdir_root = Path(tmpdir_root)
+
+        def _run_gpu(gpu: str, chunk: list[tuple[str, str]]):
+            tmpdir = tmpdir_root / f"gpu{gpu}"
+            tmpdir.mkdir()
+            staged = []
+            for name, src_path in chunk:
+                dst = tmpdir / f"{name}.pdf"
+                os.symlink(os.path.abspath(src_path), dst)
+                staged.append((name, dst))
+
+            ok = run_mineru(tmpdir, output_dir, gpu)
+            if not ok:
+                for name, staged_pdf in staged:
+                    if not (output_dir / name / "auto").is_dir():
+                        print(f"  Retrying {name}...")
+                        run_mineru(staged_pdf, output_dir, gpu)
+            return ok
+
+        if len(gpu_groups) == 1:
+            gpu, chunk = gpu_groups[0]
+            _run_gpu(gpu, chunk)
+        else:
+            with ThreadPoolExecutor(max_workers=len(gpu_groups)) as ex:
+                futures = {ex.submit(_run_gpu, gpu, chunk): gpu
+                           for gpu, chunk in gpu_groups}
+                for f in as_completed(futures):
+                    gpu = futures[f]
+                    try:
+                        f.result()
+                    except Exception as e:
+                        print(f"  GPU {gpu} failed: {e}", file=sys.stderr)
 
     # Post-processing
     print("\nPost-processing...")

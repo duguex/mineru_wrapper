@@ -20,6 +20,7 @@ HOST="${MINERU_ROUTER_HOST:-0.0.0.0}"
 PORT="${MINERU_ROUTER_PORT:-8002}"
 WORKER_CONCURRENCY="${MINERU_API_MAX_CONCURRENT_REQUESTS:-2}"
 OUTPUT_ROOT="${MINERU_API_OUTPUT_ROOT:-/mnt/shared/mineru_api_output}"
+LOCAL_GPUS="${MINERU_ROUTER_LOCAL_GPUS:-0,1}"
 # ------------------------------------------------------------------------
 
 # Parse CLI overrides
@@ -63,7 +64,7 @@ LOG_FILE="${LOG_DIR}/router_$(date +%Y%m%d_%H%M%S).log"
 echo "=== minerU Router ===" | tee -a "$LOG_FILE"
 echo "  Host:        $HOST" | tee -a "$LOG_FILE"
 echo "  Port:        $PORT" | tee -a "$LOG_FILE"
-echo "  GPUs:        $HIP_VISIBLE_DEVICES (worker isolation via HIP_VISIBLE_DEVICES)" | tee -a "$LOG_FILE"
+echo "  GPUs:        $LOCAL_GPUS (worker isolation via HIP_VISIBLE_DEVICES)" | tee -a "$LOG_FILE"
 echo "  Per-worker concurrency: $WORKER_CONCURRENCY" | tee -a "$LOG_FILE"
 echo "  Output root: $OUTPUT_ROOT" | tee -a "$LOG_FILE"
 echo "  Backend:     pipeline (mandatory for ROCm)" | tee -a "$LOG_FILE"
@@ -73,5 +74,5 @@ echo "Router docs: http://$HOST:$PORT/docs" | tee -a "$LOG_FILE"
 echo "Health:      http://$HOST:$PORT/health" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
 
-exec conda run -n torch_rocm72 --no-capture-output \
-    mineru-router --host "$HOST" --port "$PORT" --local-gpus=auto >> "$LOG_FILE" 2>&1
+conda run -n torch_rocm72 --no-capture-output \
+    mineru-router --host "$HOST" --port "$PORT" --local-gpus="$LOCAL_GPUS" >> "$LOG_FILE" 2>&1
