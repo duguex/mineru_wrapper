@@ -335,3 +335,106 @@ Expect: `Done: 2 parsed, 0 failed, 0 skipped`, two paper dirs under `parsed/`, o
 - `~/logs/mineru/` — created on first run; permissions must allow writes
 
 If the env or script is missing, the wrapper prints a warning but still attempts to run (so first-time setups get a chance to fail loudly from minerU itself rather than a silent wrapper error).
+
+## Best practices for large batch runs (>1000 PDFs)
+
+Lessons from the 13,076-PDF run (47 h, 100% success, ~317 PDFs/h on 2× Vega 20).
+
+### 0. Pre-flight (read first)
+
+- Read `CLAUDE.md` "Known limitations" and "GPU Concurrency" sections — past failures are documented.
+- Read `bench_results.md` for the optimal config (router, 2 GPUs, `c2per`).
+- Use the existing `deploy_router.sh` — don't hand-roll env setup; ROCm + minerU details are non-obvious.
+
+### 1. Small-batch test first
+
+Before any 1000+ PDF run, do a 20-PDF test. Exposes integration issues fast:
+- `--local-gpus` resolution on ROCm
+- `HIP_VISIBLE_DEVICES` per-worker isolation
+- progress.json schema mismatches
+- router task_id conflicts
+
+A 20-PDF test takes ~5 min and prevents 47-hour mistakes.
+
+### 2. Service architecture
+
+| Scale | Tool | Why |
+|---|---|---|
+| <20 PDFs | `mineru_wrapper.py` | No daemon, no router overhead |
+| 20–200 | `mineru_wrapper.py --gpus 0,1` | Single command, static split OK |
+| 200+ | `deploy_router.sh` + `batch_parse.py` | Dynamic least-loaded scheduling beats static |
+| 1000+ | Same, with progress checkpoint | Resume on crash is mandatory |
+
+Router's load formula: `score = (queued + processing + pending) / max_concurrent` — always picks the least-loaded healthy worker, randomized among ties. Far better than round-robin.
+
+### 3. Background processes
+
+**Always use `daemonize.py` (double-fork)**, not `nohup`/`setsid`/`disown`. Bash tool timeouts, SSH drops, and Ctrl+C all kill process groups; only double-fork detaches fully.
+
+Wrapper pattern for any long-running job:
+```bash
+# run_batch.sh: pkill old, daemonize router, wait health, daemonize worker
+python3 daemonize.py bash deploy_router.sh --host 127.0.0.1 --worker-conc 2
+# ... wait for /health ...
+python3 daemonize.py python3 batch_parse.py --src ... --url ...
+```
+
+### 4. ROCm-specific gotchas
+
+- **Never `--local-gpus=auto` on ROCm** — `auto` reads `CUDA_VISIBLE_DEVICES` which ROCm ignores, returns 1 GPU. Always explicit `0,1` (or `MINERU_ROUTER_LOCAL_GPUS`).
+- **Never `exec` in manually-launched deploy scripts** — kills router on parent shell exit. Reserve `exec` for systemd.
+- **`exec`-less `deploy_router.sh`** defaults to `0,1`, supports `MINERU_ROUTER_LOCAL_GPUS` env override.
+
+### 5. Per-PDF failure handling
+
+- Submit PDFs individually (`/file_parse` per request), not in one batched call.
+- Retry with exponential backoff: 15s, 30s, 45s. Most failures are transient (router restart, GPU OOM).
+- Persist `progress.json` after every PDF (atomic write: tmp + rename). Crash-safe resume.
+- Skip key: `parsed/<name>/paper.md` exists → skip. Independent of `progress.json` for cross-tool consistency.
+- Have a `wrapper-solo` fallback path for PDFs that consistently fail with router HTTP 409 / task_id conflicts (router has a task_id collision bug for some papers).
+
+### 6. Progress visibility
+
+- Terminal stdout: one line per PDF `[N/total] name OK 12.3s` — easy to grep.
+- `progress.json` for stats (works across restarts).
+- `batch_status.py` for human-readable summary (progress bar, ETA, rate).
+- Run `watch -n 10 batch_status.py` in another terminal — don't tail logs manually.
+
+### 7. Cleanup
+
+`mineru-api` workers load ~30 GB of model weights per GPU and never release them when idle. After every batch run:
+
+```bash
+pkill -9 -f "mineru-router"
+pkill -9 -f "mineru.cli.fast_api"
+pkill -9 -f "conda run.*mineru"
+```
+
+`rocm-smi` should show VRAM 0% on both GPUs afterward. Workers don't gracefully exit on their own.
+
+### 8. Manifest schema
+
+`mineru_wrapper.py` writes `status: "parsed"`; `batch_parse.py` writes `status: "done"`. Normalize to one (`done`) when merging. Always include `summary: {total, done, failed, pending}` at the top level for quick scans.
+
+### 9. Checklist (copy-paste)
+
+```
+[ ] Read CLAUDE.md and bench_results.md
+[ ] 20-PDF smoke test (router + batch_parse)
+[ ] deploy_router.sh uses --local-gpus=0,1 (not auto)
+[ ] deploy_router.sh has no `exec`
+[ ] router + batch_parse both daemonized via daemonize.py
+[ ] progress.json checkpointed after each PDF
+[ ] batch_status.py running in another terminal
+[ ] pkill all mineru processes when done
+[ ] manifest.json normalized to {total, done, failed, pending}
+```
+
+### 10. Throughput expectations
+
+Phys Rev corpus (~30 pages average, mixed text/figures):
+- 1 GPU, 1 worker: ~250 PDFs/h
+- 2 GPU, 2 workers × conc 2 (router): ~320 PDFs/h
+- 2 GPU, 2 workers × conc 3: OOM, throughput drops
+
+12K PDFs ≈ 38–47 hours on the recommended config. Run unattended over a weekend.
