@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""minerU wrapper — parse PDFs with automated ROCm env and output standardization.
+"""minerU wrapper — parse PDFs with automated CUDA env and output standardization.
 
 Usage:
     mineru_wrapper.py paper.pdf                      # single PDF
@@ -47,25 +47,25 @@ def derive_name(pdf_path: str) -> str:
 def mineru_available() -> bool:
     """Check whether the minerU conda env exists."""
     result = subprocess.run(
-        ["conda", "run", "-n", "torch_rocm72", "--help"],
+        ["conda", "run", "-n", "mineru", "--help"],
         capture_output=True, text=True, timeout=10,
     )
     return result.returncode == 0
 
 
-def run_mineru(input_path: Path, output_dir: Path, gpu: str = "1") -> bool:
+def run_mineru(input_path: Path, output_dir: Path, gpu: str = "0") -> bool:
     """Run minerU with persistent logging. Output streams to both terminal and log file."""
     log_dir = Path.home() / "logs" / "mineru"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
-    env_script = os.path.expanduser("~/mineru-rocm/mineru-rocm-env.sh")
+    env_script = os.path.expanduser("~/mineru-cuda/mineru-cuda-env.sh")
     cmd = (
         f"export MINERU_API_MAX_CONCURRENT_REQUESTS=1 && "
         f"source {shlex.quote(env_script)} && "
-        f"export HIP_VISIBLE_DEVICES={gpu} && "
+        f"export CUDA_VISIBLE_DEVICES={gpu} && "
         f"export PATH=/opt/conda/bin:$PATH && "
-        f"conda run -n torch_rocm72 mineru -p {shlex.quote(str(input_path))} "
+        f"conda run -n mineru mineru -p {shlex.quote(str(input_path))} "
         f"-o {shlex.quote(str(output_dir))} -b pipeline -m auto -l en"
     )
 
@@ -219,7 +219,7 @@ def standardize_output(name: str, raw_parent: Path, target_dir: Path) -> Path | 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="minerU wrapper — parse PDFs with automated ROCm env and output standardization"
+        description="minerU wrapper — parse PDFs with automated CUDA env and output standardization"
     )
     parser.add_argument("pdfs", nargs="+", metavar="PATH",
                         help="PDF file(s) or director(ies) of PDFs")
@@ -227,8 +227,8 @@ def main():
                         help="Output root directory (default: current directory)")
     parser.add_argument("--force", action="store_true",
                         help="Re-parse already-processed PDFs")
-    parser.add_argument("--gpus", default="1",
-                        help="GPU(s) to use, CSV e.g. '1' or '0,1' (default: 1)")
+    parser.add_argument("--gpus", default="0",
+                        help="GPU(s) to use, CSV e.g. '0' or '0,1' (default: 0)")
     args = parser.parse_args()
 
     all_pdfs = collect_pdfs(args.pdfs)
@@ -237,7 +237,7 @@ def main():
         sys.exit(1)
 
     if not mineru_available():
-        print("Warning: minerU conda env (torch_rocm72) not found.",
+        print("Warning: minerU conda env (mineru) not found.",
               file=sys.stderr)
 
     output_dir = Path(args.output)

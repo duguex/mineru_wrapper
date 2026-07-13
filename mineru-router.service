@@ -1,5 +1,5 @@
 [Unit]
-Description=minerU PDF parsing Router (multi-GPU ROCm)
+Description=minerU PDF parsing Router (multi-GPU CUDA)
 After=network.target
 Wants=network-online.target
 
@@ -14,10 +14,8 @@ Environment=MINERU_ROUTER_PORT=8002
 Environment=MINERU_API_MAX_CONCURRENT_REQUESTS=2
 Environment=MINERU_API_OUTPUT_ROOT=/mnt/shared/mineru_api_output
 Environment=MINERU_API_ENABLE_FASTAPI_DOCS=0
-Environment=HIP_VISIBLE_DEVICES=0,1
-Environment=ROCM_HOME=/opt/rocm-7.2.1
-Environment=ROCBLAS_TENSILE_LIBPATH=/opt/rocm-7.2.1/lib/rocblas/library/
-Environment=LD_LIBRARY_PATH=/opt/rocm-7.2.1/lib
+Environment=CUDA_VISIBLE_DEVICES=0
+Environment=MINERU_ROUTER_LOCAL_GPUS=0
 
 # ExecStart
 ExecStart=/home/YOUR_USER/mineru_wrapper/deploy_router.sh

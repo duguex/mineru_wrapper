@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-A pair of small scripts that wrap [minerU](https://github.com/opendatalab/MinerU) for PDF → structured Markdown parsing on a ROCm GPU box. The wrapper hides ROCm env setup, GPU selection, batch staging, and minerU's noisy auxiliary output — one positional CLI that accepts any mix of PDF files and directories.
+A pair of small scripts that wrap [minerU](https://github.com/opendatalab/MinerU) for PDF → structured Markdown parsing on an NVIDIA CUDA host (currently 1× Tesla V100 / sm_70, torch+cu126). The wrapper hides CUDA env setup, GPU selection, batch staging, and minerU's noisy auxiliary output — one positional CLI that accepts any mix of PDF files and directories. Legacy AMD/ROCm notes live under `~/archive/mineru-rocm/` (GitHub archived: duguex/mineru-rocm) and historical `bench_results.md`.
 
 ## API Server
 
@@ -31,8 +31,8 @@ python3 mineru_wrapper.py paper.pdf --force
 # Custom output root (default: current directory)
 python3 mineru_wrapper.py paper.pdf -o /tmp/out
 
-# Dual-GPU (splits PDFs across GPUs in parallel)
-python3 mineru_wrapper.py pdf_dir/ --gpus 0,1
+# Multi-GPU when available (splits PDFs across GPUs in parallel)
+python3 mineru_wrapper.py pdf_dir/ --gpus 0          # default on this host
 ```
 
 Every run writes `output_dir/parsed/manifest.json`; when exactly one PDF is processed, the friendly path triple (`paper.md` / `images/` / `image-map.txt`) is also printed.
@@ -53,7 +53,7 @@ Two scripts with a one-way dependency: `mineru_wrapper.py` calls `map_mineru_ima
 1. **Discovery** (`collect_pdfs`) — resolve positional args to a `[(derived_name, abs_path)]` list. Mixes files and directories, deduplicates by derived name, warns on non-PDF inputs.
 2. **Skip filter** — drop any PDF that already has `output_dir/parsed/<name>/paper.md`, unless `--force`. The same rule applies whether one or many PDFs are passed.
 3. **Staging** — symlink each PDF into a `TemporaryDirectory` as `<derived_name>.pdf`. minerU honours its input filename when naming output dirs, so without this step a PDF like `Foo - 2020 - bar.pdf` would land in `Foo_-_2020_-_bar/auto/` while the wrapper looks under `Foo_2020_bar/auto/`.
-4. **Env bootstrap** (`run_mineru`) — sources `~/mineru-rocm/mineru-rocm-env.sh`, pins `HIP_VISIBLE_DEVICES` to the requested GPU, sets `MINERU_API_MAX_CONCURRENT_REQUESTS=1`, then shells out to `conda run -n torch_rocm72 mineru -p <staged-tmpdir> -o <output> -b pipeline -m auto -l en`. Accepts a `gpu` parameter (default `"1"`). When `--gpus 0,1` is passed, papers are split evenly across GPUs (round-robin: GPU 0 gets even-indexed, GPU 1 gets odd-indexed) and run in parallel via `ThreadPoolExecutor`. On failure, retries any PDFs whose `auto/` dir is missing.
+4. **Env bootstrap** (`run_mineru`) — sources `~/mineru-cuda/mineru-cuda-env.sh`, pins `CUDA_VISIBLE_DEVICES` to the requested GPU, sets `MINERU_API_MAX_CONCURRENT_REQUESTS=1`, then shells out to `conda run -n mineru mineru -p <staged-tmpdir> -o <output> -b pipeline -m auto -l en`. Accepts a `gpu` parameter (default `"0"`). When `--gpus 0,1` is passed (multi-GPU machines only), papers are split evenly across GPUs (round-robin) and run in parallel via `ThreadPoolExecutor`. On failure, retries any PDFs whose `auto/` dir is missing.
 5. **Post-processing** — for each paper: `generate_image_map` (subprocess to `map_mineru_images.py`) then `standardize_output`.
 6. **Manifest** — always written to `<output>/parsed/manifest.json` with per-paper `{name, pdf_path, paper_md, status}`.
 
@@ -79,10 +79,12 @@ Algorithm:
 - **Equation-heavy papers yield empty `images/`.** Every extracted JPG was a formula rendering that `paper.md` already represents as LaTeX, so the orphan filter drops the whole set. Example: Grzybowski 2000 — 36 JPGs in → 0 retained, 0 entries in `image-map.txt`. Correct behaviour; if you need every PDF page as a raster regardless, use a different tool.
 - **Caption-before-ref formats land in the `FIG. ??` bucket.** The mapper only looks 400 chars *after* each `![](...)` for a `FIG. N` / `TABLE N` caption. Review articles and book chapters that put the caption *before* the image (`Figure 2\n![](...)`), or that scatter panel labels (`A`, `B`, `C`) between adjacent refs without a `FIG. N` prefix, are not recognised; affected refs fall into the `FIG. ??` fallback bucket and get sub-labels `(a)`, `(b)`, …, `(aa)` … Example: Luo 2023 — 27 / 37 refs in `FIG. ??`. Downstream LaTeX templates can treat `FIG. ??` as "unidentified — skip, place in appendix, or pass to the vision model below".
 
-### ROCm / deployment
+### CUDA / deployment (this host)
 
-- **`--local-gpus=auto` only detects 1 GPU on ROCm.** `mineru-router` uses CUDA_VISIBLE_DEVICES for GPU counting, which ROCm ignores. Always pass explicit GPU list: `--local-gpus=0,1`. `deploy_router.sh` defaults to `0,1` for this reason.
-- **`exec` in deploy scripts kills router when parent exits.** `deploy_router.sh` no longer uses `exec` — start with `nohup bash deploy_router.sh &` for background persistence. The router log goes to `/mnt/shared/mineru_logs/`.
+- **1× Tesla V100-PCIE-32GB.** Prefer `deploy_api.sh` (single process). `deploy_router.sh` auto-detects GPU count via `nvidia-smi` (no longer hard-codes `0,1`).
+- **VRAM contention:** ollama often occupies most of the 32GB. Free VRAM before batch runs, or keep `--worker-conc 1` / `MINERU_API_MAX_CONCURRENT_REQUESTS=1`.
+- **Backend:** always `pipeline` for reliability. hybrid/vlm need extra VRAM and usually vLLM — not the default path on V100.
+- **Stack:** conda env `mineru` = torch 2.12.1+cu126 + mineru 3.4.x. Do **not** install official cu130 wheels (no sm_70 kernels on V100). Env script unsets `HIP_VISIBLE_DEVICES` / `ROCM_HOME` so old ROCm settings do not leak in.
 
 ## Vision model
 
@@ -125,30 +127,23 @@ In LaTeX/Beamer, point `\graphicspath{{.../parsed/<name>/images/}}` and referenc
 
 ## GPU Concurrency & mineru-router
 
-### ROCm GPU isolation fix
+### GPU isolation (CUDA)
 
-`mineru-router` isolates workers via `CUDA_VISIBLE_DEVICES`, which ROCm ignores.
-A local patch at `mineru/cli/router.py:425-430` also sets `HIP_VISIBLE_DEVICES`:
+On NVIDIA, `mineru-router` isolates workers with `CUDA_VISIBLE_DEVICES` alone — no HIP patch required.
+(Historical ROCm hosts needed an extra `HIP_VISIBLE_DEVICES` set alongside CUDA; that path is unused here.)
 
-```python
-if self.gpu is not None:
-    visible_env = get_local_device_visible_env_name()
-    env[visible_env] = str(self.gpu)
-    # ROCm compatibility: HIP_VISIBLE_DEVICES alongside CUDA_VISIBLE_DEVICES
-    if visible_env == "CUDA_VISIBLE_DEVICES":
-        env["HIP_VISIBLE_DEVICES"] = str(self.gpu)
+### Starting the server
+
+**Single V100 (recommended):**
+```bash
+nohup bash deploy_api.sh --host 127.0.0.1 --worker-conc 1 &
+curl -s http://127.0.0.1:8001/health
 ```
 
-### Starting the router
-
-Use `deploy_router.sh`. **Do not** use `--local-gpus=auto` on ROCm — it only detects 1 GPU.
-Must pass explicit GPU list: `--local-gpus=0,1` (default in `deploy_router.sh`).
-
+**Multi-GPU router** (only when `nvidia-smi -L` shows >1 GPU):
 ```bash
-# Start router in background (use nohup — the script no longer uses exec)
 nohup bash deploy_router.sh --host 127.0.0.1 --worker-conc 2 &
-
-# Verify both workers are healthy
+# or force: MINERU_ROUTER_LOCAL_GPUS=0,1 bash deploy_router.sh ...
 curl -s http://127.0.0.1:8002/health | python3 -c "
 import json, sys; h=json.load(sys.stdin)
 for s in h['servers']: print(f'{s[\"server_id\"]} gpu={s[\"gpu\"]} healthy={s[\"healthy\"]}')
@@ -157,19 +152,15 @@ for s in h['servers']: print(f'{s[\"server_id\"]} gpu={s[\"gpu\"]} healthy={s[\"
 
 Router provides **dynamic least-loaded scheduling**: each request goes to the worker with
 lowest `(queued + processing + pending) / max_concurrent_requests` ratio, randomized among ties.
-Much better than static round-robin for mixed-size workloads.
 
-### Router environment
+### Server environment
 
 ```bash
-export ROCM_HOME=/opt/rocm-7.2.1
-export ROCBLAS_TENSILE_LIBPATH=/opt/rocm-7.2.1/lib/rocblas/library/
-export LD_LIBRARY_PATH=/opt/rocm-7.2.1/lib
-export HIP_VISIBLE_DEVICES=0,1
-export MINERU_API_MAX_CONCURRENT_REQUESTS=2
-
-conda run -n torch_rocm72 --no-capture-output \
-  mineru-router --host 0.0.0.0 --port 8002 --local-gpus=0,1
+source ~/mineru-cuda/mineru-cuda-env.sh
+export CUDA_VISIBLE_DEVICES=0
+export MINERU_API_MAX_CONCURRENT_REQUESTS=1
+conda run -n mineru --no-capture-output \
+  mineru-api --host 0.0.0.0 --port 8001
 ```
 
 ### Batch processing (large-scale, via router)
@@ -326,34 +317,36 @@ Expect: `Done: 2 parsed, 0 failed, 0 skipped`, two paper dirs under `parsed/`, o
 | `main()` / CLI / skip | Smoke (2) + skip (3) |
 | `collect_pdfs` / argparse | Skip (3) + batch (4) |
 | `map_mineru_images.py` | Smoke (2) and inspect resulting `image-map.txt` |
-| `run_mineru` / ROCm env | Smoke (2) — failure shows up in `~/logs/mineru/run_*.log` |
+| `run_mineru` / CUDA env | Smoke (2) — failure shows up in `~/logs/mineru/run_*.log` |
 
 ## Environment requirements (external to repo)
 
-- conda env `torch_rocm72` with minerU installed
-- `~/mineru-rocm/mineru-rocm-env.sh` — ROCm env script
+- conda env `mineru` with torch 2.12.1+cu126 + mineru[core] 3.4.x
+- `~/mineru-cuda/mineru-cuda-env.sh` — CUDA env script (unsets HIP/ROCm)
+- models already under `~/.cache/modelscope/...` (see `~/mineru.json`)
 - `~/logs/mineru/` — created on first run; permissions must allow writes
+- Optional legacy (archived/removed on this host): `~/archive/mineru-rocm/` + former env `torch_rocm72`
 
 If the env or script is missing, the wrapper prints a warning but still attempts to run (so first-time setups get a chance to fail loudly from minerU itself rather than a silent wrapper error).
 
 ## Best practices for large batch runs (>1000 PDFs)
 
-Lessons from the 13,076-PDF run (47 h, 100% success, ~317 PDFs/h on 2× Vega 20).
+Lessons from the historical 13,076-PDF run (47 h, 100% success on 2× Vega 20 ROCm). On this **1× V100** host, expect lower concurrency and clear ollama VRAM first.
 
 ### 0. Pre-flight (read first)
 
 - Read `CLAUDE.md` "Known limitations" and "GPU Concurrency" sections — past failures are documented.
-- Read `bench_results.md` for the optimal config (router, 2 GPUs, `c2per`).
-- Use the existing `deploy_router.sh` — don't hand-roll env setup; ROCm + minerU details are non-obvious.
+- Free GPU memory: ollama often holds ~24GB; leave room for mineru pipeline models.
+- Use `deploy_api.sh` on single GPU; `deploy_router.sh` only if multiple NVIDIA GPUs are present.
 
 ### 1. Small-batch test first
 
 Before any 1000+ PDF run, do a 20-PDF test. Exposes integration issues fast:
-- `--local-gpus` resolution on ROCm
-- `HIP_VISIBLE_DEVICES` per-worker isolation
+- free VRAM / OOM under ollama coexistence
+- `CUDA_VISIBLE_DEVICES` / single-worker health
 - progress.json schema mismatches
-- router task_id conflicts
-
+- router task_id conflicts (if using router)
+- backend left as hybrid (must force `pipeline`)
 A 20-PDF test takes ~5 min and prevents 47-hour mistakes.
 
 ### 2. Service architecture
@@ -361,8 +354,8 @@ A 20-PDF test takes ~5 min and prevents 47-hour mistakes.
 | Scale | Tool | Why |
 |---|---|---|
 | <20 PDFs | `mineru_wrapper.py` | No daemon, no router overhead |
-| 20–200 | `mineru_wrapper.py --gpus 0,1` | Single command, static split OK |
-| 200+ | `deploy_router.sh` + `batch_parse.py` | Dynamic least-loaded scheduling beats static |
+| 20–200 (1 GPU) | `deploy_api.sh` + `batch_parse.py --concurrency 1` | Single V100 safe path |
+| multi-GPU only | `deploy_router.sh` + `batch_parse.py` | Dynamic least-loaded scheduling |
 | 1000+ | Same, with progress checkpoint | Resume on crash is mandatory |
 
 Router's load formula: `score = (queued + processing + pending) / max_concurrent` — always picks the least-loaded healthy worker, randomized among ties. Far better than round-robin.
@@ -373,17 +366,18 @@ Router's load formula: `score = (queued + processing + pending) / max_concurrent
 
 Wrapper pattern for any long-running job:
 ```bash
-# run_batch.sh: pkill old, daemonize router, wait health, daemonize worker
-python3 daemonize.py bash deploy_router.sh --host 127.0.0.1 --worker-conc 2
-# ... wait for /health ...
-python3 daemonize.py python3 batch_parse.py --src ... --url ...
+# run_batch.sh: pkill old, start API, wait health, daemonize worker
+python3 daemonize.py bash deploy_api.sh --host 127.0.0.1 --worker-conc 1
+# ... wait for /health on :8001 ...
+python3 daemonize.py python3 batch_parse.py --src ... --url http://127.0.0.1:8001 --concurrency 1
 ```
 
-### 4. ROCm-specific gotchas
+### 4. CUDA / V100 gotchas
 
-- **Never `--local-gpus=auto` on ROCm** — `auto` reads `CUDA_VISIBLE_DEVICES` which ROCm ignores, returns 1 GPU. Always explicit `0,1` (or `MINERU_ROUTER_LOCAL_GPUS`).
-- **Never `exec` in manually-launched deploy scripts** — kills router on parent shell exit. Reserve `exec` for systemd.
-- **`exec`-less `deploy_router.sh`** defaults to `0,1`, supports `MINERU_ROUTER_LOCAL_GPUS` env override.
+- **Do not install cu130 torch wheels** — V100 (sm_70) is dropped from those builds; use cu126.
+- **Watch free VRAM** — with ollama running, keep concurrency at 1.
+- **Unset HIP/ROCm env** — `mineru-cuda-env.sh` does this; avoid sourcing archived `~/archive/mineru-rocm/mineru-rocm-env.sh` on this host.
+- **Never `exec` in manually-launched deploy scripts** — kills server on parent shell exit. Reserve `exec` for systemd (`deploy_api.sh` uses `exec` intentionally for systemd).
 
 ### 5. Per-PDF failure handling
 

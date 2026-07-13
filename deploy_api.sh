@@ -1,7 +1,7 @@
 #!/bin/bash
 # deploy_api.sh — Start minerU FastAPI server (single-process mode)
 #
-# All GPUs in HIP_VISIBLE_DEVICES are visible to the single process.
+# All GPUs in CUDA_VISIBLE_DEVICES are visible to the single process.
 # minerU's internal scheduling decides which GPU to use (typically GPU 0).
 #
 # For per-GPU worker isolation + load balancing, use deploy_router.sh instead.
@@ -13,7 +13,7 @@
 #   ./deploy_api.sh --worker-conc 1    # concurrent requests (default 2)
 #
 
-set -eo pipefail  # no -u: mineru-rocm-env.sh uses unbound LD_LIBRARY_PATH
+set -eo pipefail  # no -u: env script may reference optional vars
 
 # ---- Config ------------------------------------------------------------
 HOST="${MINERU_API_HOST:-0.0.0.0}"
@@ -33,8 +33,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Source ROCm environment
-ENV_SCRIPT="$HOME/mineru-rocm/mineru-rocm-env.sh"
+# Source CUDA environment
+ENV_SCRIPT="$HOME/mineru-cuda/mineru-cuda-env.sh"
 if [ -f "$ENV_SCRIPT" ]; then
     # shellcheck disable=SC1090
     source "$ENV_SCRIPT"
@@ -44,7 +44,7 @@ fi
 
 # Single GPU (minerU's single process uses GPU 0 by default)
 # For multi-GPU load balancing, use deploy_router.sh instead.
-export HIP_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=0
 
 # One concurrent request per GPU
 export MINERU_API_MAX_CONCURRENT_REQUESTS="$WORKER_CONCURRENCY"
@@ -65,9 +65,9 @@ echo "=== minerU API Server ===" | tee -a "$LOG_FILE"
 echo "  Host:        $HOST" | tee -a "$LOG_FILE"
 echo "  Port:        $PORT" | tee -a "$LOG_FILE"
 echo "  Output root: $OUTPUT_ROOT" | tee -a "$LOG_FILE"
-echo "  GPU device:  $HIP_VISIBLE_DEVICES" | tee -a "$LOG_FILE"
+echo "  GPU device:  $CUDA_VISIBLE_DEVICES" | tee -a "$LOG_FILE"
 echo "  Concurrency: $MINERU_API_MAX_CONCURRENT_REQUESTS" | tee -a "$LOG_FILE"
-echo "  Backend:     pipeline (mandatory for ROCm)" | tee -a "$LOG_FILE"
+echo "  Backend:     pipeline (recommended on V100)" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
 echo "Log: $LOG_FILE" | tee -a "$LOG_FILE"
 echo "API docs:  http://$HOST:$PORT/docs" | tee -a "$LOG_FILE"
@@ -76,6 +76,6 @@ echo "" | tee -a "$LOG_FILE"
 
 # Launch the API server (append all output to log)
 # NOTE: clients MUST specify backend=pipeline (the default hybrid-auto-engine
-# depends on CUDA vLLM which is unavailable on ROCm).
-exec conda run -n torch_rocm72 --no-capture-output \
+# hybrid/vlm may need extra VRAM / vLLM).
+exec conda run -n mineru --no-capture-output \
     mineru-api --host "$HOST" --port "$PORT" >> "$LOG_FILE" 2>&1

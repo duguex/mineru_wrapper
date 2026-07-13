@@ -1,5 +1,5 @@
 [Unit]
-Description=minerU PDF parsing API server (ROCm)
+Description=minerU PDF parsing API server (CUDA)
 After=network.target
 Wants=network-online.target
 
@@ -14,10 +14,7 @@ Environment=MINERU_API_PORT=8001
 Environment=MINERU_API_MAX_CONCURRENT_REQUESTS=2
 Environment=MINERU_API_OUTPUT_ROOT=/mnt/shared/mineru_api_output
 Environment=MINERU_API_ENABLE_FASTAPI_DOCS=1
-Environment=HIP_VISIBLE_DEVICES=0
-Environment=ROCM_HOME=/opt/rocm-7.2.1
-Environment=ROCBLAS_TENSILE_LIBPATH=/opt/rocm-7.2.1/lib/rocblas/library/
-Environment=LD_LIBRARY_PATH=/opt/rocm-7.2.1/lib
+Environment=CUDA_VISIBLE_DEVICES=0
 
 # ExecStart — use the wrapper script to ensure env is correct
 ExecStart=/home/YOUR_USER/mineru_wrapper/deploy_api.sh

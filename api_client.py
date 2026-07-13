@@ -7,7 +7,7 @@ Usage:
     python3 api_client.py dir/ http://<server>:<port>
     python3 api_client.py dir/ extra.pdf http://<server>:<port> --async
 
-The server must use the `pipeline` backend (ROCm limitation, not hybrid).
+The server should use the `pipeline` backend (recommended on V100; hybrid/vlm need extra VRAM/vLLM).
 """
 import argparse
 import json

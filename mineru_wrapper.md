@@ -1,12 +1,13 @@
 # minerU Wrapper
 
-Single command for PDF parsing with ROCm GPU setup, image mapping, and output standardization.
+Single command for PDF parsing with CUDA GPU setup (V100 / cu126), image mapping, and output standardization.
 Also includes a FastAPI server deployment for remote PDF parsing.
 
 ## Requirements
 
-- minerU conda env: `torch_rocm72`
-- ROCm env script: `~/mineru-rocm/mineru-rocm-env.sh`
+- minerU conda env: `mineru` (torch 2.12.1+cu126)
+- CUDA env script: `~/mineru-cuda/mineru-cuda-env.sh`
+- Legacy ROCm (archived): `~/archive/mineru-rocm/` / https://github.com/duguex/mineru-rocm — do not use on this host
 
 ## Local CLI Usage
 
@@ -53,7 +54,7 @@ The server binds to `0.0.0.0:<port>` by default.
 ## API Server Deployment — Router Mode (multi-GPU)
 
 Starts `mineru-router` which spawns one `mineru-api` worker per GPU,
-isolates each via `HIP_VISIBLE_DEVICES=<gpu_id>`, and load-balances.
+isolates each via `CUDA_VISIBLE_DEVICES=<gpu_id>`, and load-balances.
 Recommended for throughput (see benchmark below).
 
 ```bash
@@ -72,10 +73,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now mineru-router
 ```
 
-The router must have the `HIP_VISIBLE_DEVICES` patch applied.
-The upstream router isolates workers via `CUDA_VISIBLE_DEVICES`, which ROCm ignores.
-A local patch (`mineru/cli/router.py:425-430`) also sets `HIP_VISIBLE_DEVICES`
-per worker. See [CLAUDE.md](CLAUDE.md) for the code.
+On NVIDIA CUDA, stock `CUDA_VISIBLE_DEVICES` isolation is enough.
 
 Benchmark: `router-2gpu-c2per` (concurrency=2 per worker) achieves **3.75× throughput**
 vs single-GPU sequential, zero failures. See [bench_results.md](bench_results.md).
@@ -84,10 +82,10 @@ vs single-GPU sequential, zero failures. See [bench_results.md](bench_results.md
 
 | Aspect | Single API (`deploy_api.sh`) | Router (`deploy_router.sh`) |
 |--------|------------------------------|----------------------------|
-| GPUs used | 1 (GPU 0 by default) | Both (one worker per GPU) |
-| Throughput | 1.16× baseline | **3.75× baseline** |
-| Complexity | Simpler | One extra process |
-| Use case | Light load / dev | Production / high throughput |
+| GPUs used | 1 (GPU 0) | auto-detect via `nvidia-smi` (or `MINERU_ROUTER_LOCAL_GPUS`) |
+| Throughput | baseline on 1× V100 | only useful with ≥2 GPUs |
+| Complexity | Simpler — **use this on current host** | Extra process |
+| Use case | This machine (1× V100) | Multi-GPU boxes |
 
 ## API Usage (for other people)
 
@@ -127,9 +125,9 @@ python3 ~/mineru_wrapper/api_client.py pdf_dir/ extra.pdf http://<server>:<port>
 Output is saved to `./parsed/<name>/{paper.md, images/}`.
 
 ### Important
-- **Must pass `backend=pipeline`** — the default `hybrid-auto-engine` depends on CUDA vLLM (unavailable on ROCm)
+- Prefer `backend=pipeline` on V100 (stable, matches previous workflow)
 - `lang_list=["en"]` for English, `["ch"]` for Chinese
-- Server is limited to 1 concurrent request (ROCm stability)
+- Watch GPU memory: ollama may already occupy most of the V100 (~24GB); keep concurrency at 1 until free VRAM is ample
 
 
 ## API Endpoints
@@ -163,7 +161,7 @@ The wrapper:
 1. Resolves the positional args (`collect_pdfs`) into a deduplicated list of `(derived_name, abs_path)`
 2. Skips any PDF that already has `parsed/<name>/paper.md` unless `--force`
 3. Symlinks the remaining PDFs into a `TemporaryDirectory` under their derived names (so minerU's output directories match)
-4. Sources `~/mineru-rocm/mineru-rocm-env.sh`, sets `HIP_VISIBLE_DEVICES=1` and `MINERU_API_MAX_CONCURRENT_REQUESTS=1`
+4. Sources `~/mineru-cuda/mineru-cuda-env.sh`, sets `CUDA_VISIBLE_DEVICES=0` (default) and `MINERU_API_MAX_CONCURRENT_REQUESTS=1`
 5. Runs minerU once with `-b pipeline -m auto -l en` over the staged directory; on failure, retries each missing paper individually
 6. Generates `image-map.txt` via `map_mineru_images.py` and standardizes each paper's output to `parsed/<name>/{paper.md, images/, image-map.txt}`
 7. Writes `parsed/manifest.json`
