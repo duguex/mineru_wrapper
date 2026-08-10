@@ -6,15 +6,17 @@ HTTP client). Deepens the old per-path post-processing (subprocess mapper +
 another orphan filter per caller) into one in-process step:
 
   * raw arrival — minerU's `<src>/<name>/auto/` tree: rename the markdown to
-    paper.md, move images/, generate image-map.txt in-process, drop the
+    paper.md, move images/, regenerate image-map.txt in-process, drop the
     auxiliary junk minerU leaves behind
   * final arrival — a tree already written as `parsed/<name>/{paper.md,
-    images/}` by batch/HTTP callers: generate image-map.txt if missing, drop
-    orphan images
+    images/}` by batch/HTTP callers: regenerate image-map.txt from the
+    current paper.md, drop orphan images
 
-Idempotent. Image-map generation failure is non-fatal: the input still
-finalizes to paper.md without an image-map (the orphan filter then keeps
-anything paper.md references and drops only unreferenced files).
+Idempotent. The image-map is always regenerated (never "if missing") — a
+stale map from an earlier run must not stay authoritative. Image-map
+generation failure is non-fatal: the input still finalizes to paper.md
+without an image-map (the orphan filter then keeps anything paper.md
+references and drops only unreferenced files).
 
 Usage from a parse path:
 
@@ -81,7 +83,8 @@ def finalize_output(name: str, src_tree: Path, target_root: Path) -> Path | None
     no removal happens.
 
     Final mode: paper_dir = src_tree/<name> (== target_root/<name>); no move,
-    only image-map generation (if missing) and orphan filtering.
+    only image-map regeneration (from the current paper.md) and orphan
+    filtering.
 
     Returns None when there is nothing to finalize (minerU produced no output,
     or no paper.md exists at the arrival site).

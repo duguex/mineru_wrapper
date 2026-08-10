@@ -58,7 +58,7 @@ Three parse paths (CLI `mineru_wrapper.py`, router `batch_parse.py`, HTTP `api_c
 5. **Post-processing** — for each paper: `finalize_output` (from `finalize.py`) relocates the raw tree, generates `image-map.txt` in-process, and drops orphan images.
 6. **Manifest** — always written to `<output>/parsed/manifest.json` with per-paper `{name, pdf_path, paper_md, status}`.
 
-**`finalize.py: finalize_output(name, src_tree, target_root)`** — the shared finalizer. Raw arrival (minerU's `src_tree/<name>/auto/`) moves `{<name>.md, images/}` to `target_root/<name>/{paper.md, images/}`, generates `image-map.txt` in-process via `build_image_map`, drops the auxiliary junk, and removes the raw wrapper when it differs from the target. Final arrival (batch/HTTP trees already at `target_root/<name>/`) only generates the map if missing and drops orphan images. Idempotent; image-map failure is non-fatal (degrades to no map — the orphan filter then keeps anything `paper.md` references).
+**`finalize.py: finalize_output(name, src_tree, target_root)`** — the shared finalizer. Raw arrival (minerU's `src_tree/<name>/auto/`) moves `{<name>.md, images/}` to `target_root/<name>/{paper.md, images/}`, generates `image-map.txt` in-process via `build_image_map`, drops the auxiliary junk, and removes the raw wrapper when it differs from the target. Final arrival (batch/HTTP trees already at `target_root/<name>/`) regenerates the map from the current paper.md and drops orphan images — always regenerated, never "if missing", so a stale map from an earlier run cannot stay authoritative. Idempotent; image-map failure is non-fatal (degrades to no map — the orphan filter then keeps anything `paper.md` references).
 
 The orphan filter deletes any image in `images/` that is referenced by neither `image-map.txt` nor `paper.md`; the decision lives in the pure `orphan_jpgs(images_dir, map_path, md_path)`. `paper.md` is the source of truth: real figures appear as `![](images/<hash>.jpg)`, equations as `$…$` LaTeX, tables as inline `<table>…</table>`. JPGs minerU extracted but paper.md doesn't reference are duplicates of one of the structured forms and are dropped. Same logic handles both layouts via arrival detection on `auto/`.
 
@@ -211,7 +211,11 @@ See `bench_results.md`. Optimal config: router, 2 GPUs, concurrency=2 per worker
 
 ## Testing
 
-There is no automated test suite. Validate changes manually using these recipes — the `paper_example` corpus is the canonical fixture. Set `PAPER_EXAMPLE=<path>` and substitute in the commands below.
+Unit tests live in `test_finalize.py`, `test_bookkeeping.py`, and
+`test_parse_client.py` (stdlib `unittest`, each run directly — see 1, 1b, 1c).
+End-to-end behaviour is validated manually with the recipes below — the
+`paper_example` corpus is the canonical fixture. Set `PAPER_EXAMPLE=<path>`
+and substitute in the commands.
 
 ### 1. Unit test for `finalize.py` (no GPU, ~1 s)
 
@@ -390,7 +394,7 @@ All three writers (`mineru_wrapper.py`, `batch_parse.py`, `api_client.py`) share
 [ ] progress.json checkpointed after each PDF
 [ ] batch_status.py running in another terminal
 [ ] pkill all mineru processes when done
-[ ] manifest.json normalized to {total, done, failed, pending}
+[ ] manifest.json schema via bookkeeping.manifest_payload: summary {total, parsed, failed, skipped}
 ```
 
 ### 10. Throughput expectations

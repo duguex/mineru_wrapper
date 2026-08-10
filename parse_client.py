@@ -16,6 +16,7 @@ drive the protocols with httpx.MockTransport.
 """
 
 import asyncio
+import base64
 import time
 from pathlib import Path
 
@@ -210,3 +211,36 @@ async def fetch_result_async(client: httpx.AsyncClient, result_url: str, *,
     if resp.status_code != 200:
         raise _parse_error("result", resp.status_code, resp.text)
     return _json_body(resp, "result")
+
+
+def materialize_results(paper_dir: Path, file_results: dict) -> dict:
+    """Write ONE paper's response entry (md_content + base64 images) to disk.
+
+    Returns {"md_written": bool, "md_chars": int, "images_count": int}. A
+    per-image base64 decode failure is dropped (only decoded images count);
+    the markdown is written only when non-empty. This is the shared
+    implementation of the API-response terms api_client and batch_parse used
+    to each hand-roll with divergent error handling.
+    """
+    md_written = False
+    md_chars = 0
+    md_content = file_results.get("md_content", "")
+    if md_content:
+        data = md_content.encode("utf-8")
+        (paper_dir / "paper.md").write_bytes(data)
+        md_written = True
+        md_chars = len(data)
+
+    images_count = 0
+    images = file_results.get("images", {})
+    if images:
+        img_dir = paper_dir / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        for name, b64data in images.items():
+            try:
+                raw = b64data.split(",", 1)[-1]
+                (img_dir / name).write_bytes(base64.b64decode(raw))
+                images_count += 1
+            except Exception:
+                pass
+    return {"md_written": md_written, "md_chars": md_chars, "images_count": images_count}

@@ -31,6 +31,7 @@ from parse_client import (
     ParseClientError,
     fetch_result_async,
     file_parse_sync,
+    materialize_results,
     parse_params,
     poll_task_async,
     submit_task_async,
@@ -141,21 +142,11 @@ def main():
 
         paper_dir = output_dir / name
         paper_dir.mkdir(parents=True, exist_ok=True)
-
-        md_content = file_results.get("md_content")
-        if md_content:
-            (paper_dir / "paper.md").write_text(md_content, encoding="utf-8")
-            print(f"  {pdf.name}: paper.md ({len(md_content)} chars)")
-
-        images = file_results.get("images", {})
-        if images:
-            import base64
-            img_dir = paper_dir / "images"
-            img_dir.mkdir(exist_ok=True)
-            for img_name, b64data in images.items():
-                data = base64.b64decode(b64data.split(",", 1)[-1])
-                (img_dir / img_name).write_bytes(data)
-            print(f"  {pdf.name}: {len(images)} images")
+        saved = materialize_results(paper_dir, file_results)
+        if saved["md_written"]:
+            print(f"  {pdf.name}: paper.md ({saved['md_chars']} chars)")
+        if saved["images_count"]:
+            print(f"  {pdf.name}: {saved['images_count']} images")
 
         finalize_output(name, output_dir, output_dir)
         if not (paper_dir / "image-map.txt").exists():

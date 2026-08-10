@@ -23,6 +23,7 @@ from parse_client import (  # noqa: E402
     fetch_result_async,
     file_parse_async,
     file_parse_sync,
+    materialize_results,
     parse_params,
     poll_task_async,
     submit_task_async,
@@ -178,6 +179,32 @@ class TasksProtocolTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ParseClientError) as ctx:
                 await fetch_result_async(client, "http://srv/tasks/42/result")
         self.assertEqual(ctx.exception.status_code, 503)
+
+
+class MaterializeResultsTest(unittest.TestCase):
+    def test_writes_md_and_images(self):
+        import base64
+        with tempfile.TemporaryDirectory() as td:
+            paper = Path(td)
+            saved = materialize_results(paper, {
+                "md_content": "# paper\n",
+                "images": {
+                    "a1.jpg": "data:image/jpeg;base64," + base64.b64encode(b"jpg").decode(),
+                    "bad.jpg": "!!not-base64!!",
+                },
+            })
+            self.assertTrue(saved["md_written"])
+            self.assertEqual(saved["md_chars"], len("# paper\n".encode("utf-8")))
+            self.assertEqual(saved["images_count"], 1, "bad base64 dropped, good one counted")
+            self.assertEqual((paper / "paper.md").read_text(), "# paper\n")
+            self.assertTrue((paper / "images" / "a1.jpg").exists())
+            self.assertFalse((paper / "images" / "bad.jpg").exists())
+
+    def test_empty_entry_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as td:
+            saved = materialize_results(Path(td), {})
+            self.assertEqual(saved, {"md_written": False, "md_chars": 0, "images_count": 0})
+            self.assertFalse((Path(td) / "paper.md").exists())
 
 
 if __name__ == "__main__":

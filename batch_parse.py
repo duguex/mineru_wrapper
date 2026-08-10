@@ -23,7 +23,6 @@ Progress:  watch -n 5 python3 batch_status.py <output>/parsed/
 
 import argparse
 import asyncio
-import base64
 import json
 import sys
 import time
@@ -44,6 +43,7 @@ from parse_client import (
     TIMEOUTS,
     ParseClientError,
     file_parse_async,
+    materialize_results,
     parse_params,
 )
 
@@ -92,29 +92,6 @@ def update_file_state(progress: dict, name: str, updates: dict):
     files = progress.setdefault("files", {})
     entry = files.setdefault(name, {"status": "pending", "retries": 0})
     entry.update(updates)
-
-
-def save_paper_output(paper_dir: Path, response_data: dict) -> dict:
-    """Write paper.md and images/ from API response. Returns {images_count}."""
-    results = response_data.get("results", {})
-    images_count = 0
-    for pdf_stem, file_results in results.items():
-        md_content = file_results.get("md_content", "")
-        if md_content:
-            (paper_dir / "paper.md").write_text(md_content, encoding="utf-8")
-
-        images = file_results.get("images", {})
-        if images:
-            img_dir = paper_dir / "images"
-            img_dir.mkdir(parents=True, exist_ok=True)
-            for name, b64data in images.items():
-                try:
-                    raw = b64data.split(",", 1)[-1]
-                    (img_dir / name).write_bytes(base64.b64decode(raw))
-                    images_count += 1
-                except Exception:
-                    pass
-    return {"images_count": images_count}
 
 
 def write_manifest(parsed_dir: Path, progress: dict):
@@ -185,7 +162,10 @@ async def process_one(
         if ok:
             elapsed = time.monotonic() - t0
             paper_dir.mkdir(parents=True, exist_ok=True)
-            save_result = save_paper_output(paper_dir, data)
+            # One PDF per request → results has a single entry; materialize it
+            # via the shared response decoder (parse_client).
+            save_result = materialize_results(
+                paper_dir, next(iter(data.get("results", {}).values()), {}))
 
             # Finalize in-process: image-map (non-fatal on failure) + orphan
             # cleanup; orphans are kept when paper.md references them.
