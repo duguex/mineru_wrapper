@@ -163,7 +163,7 @@ The wrapper:
 3. Symlinks the remaining PDFs into a `TemporaryDirectory` under their derived names (so minerU's output directories match)
 4. Sources `~/mineru-cuda/mineru-cuda-env.sh`, sets `CUDA_VISIBLE_DEVICES=0` (default) and `MINERU_API_MAX_CONCURRENT_REQUESTS=1`
 5. Runs minerU once with `-b pipeline -m auto -l en` over the staged directory; on failure, retries each missing paper individually
-6. Generates `image-map.txt` via `map_mineru_images.py` and standardizes each paper's output to `parsed/<name>/{paper.md, images/, image-map.txt}`
+6. Finalizes each paper via `finalize.py` (relocate to `parsed/<name>/`, generate `image-map.txt` in-process, drop orphan images) — the same module the router batch and HTTP client paths use
 7. Writes `parsed/manifest.json`
 
 ## Logs

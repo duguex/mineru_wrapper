@@ -2,8 +2,9 @@
 """Batch minerU parser via router API — concurrent, checkpointed, with retry.
 
 Sends PDFs one-by-one to a mineru-router (or mineru-api) server, saves
-paper.md + images/, runs map_mineru_images.py for figure labels, cleans
-orphan images, and maintains a progress.json checkpoint for resume.
+paper.md + images/, then finalizes each result in-process (image-map +
+orphan cleanup) via finalize.py, and maintains a progress.json checkpoint
+for resume.
 
 Usage:
     python3 batch_parse.py --src /path/to/pdfs \
@@ -24,10 +25,6 @@ import argparse
 import asyncio
 import base64
 import json
-import os
-import re
-import signal
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -35,11 +32,7 @@ from pathlib import Path
 
 import httpx
 
-HERE = Path(__file__).resolve().parent
-MAP_SCRIPT = HERE / "map_mineru_images.py"
-
-# Orphan filter regex — same as mineru_wrapper.py:standardize_output
-MD_IMAGE_RE = re.compile(r'\(images/(\S+\.jpg)')
+from finalize import finalize_output
 
 
 def load_progress(parsed_dir: Path) -> dict:
@@ -132,48 +125,6 @@ def save_paper_output(paper_dir: Path, response_data: dict) -> dict:
     return {"images_count": images_count}
 
 
-def generate_image_map(paper_dir: Path) -> dict:
-    """Run map_mineru_images.py to produce image-map.txt."""
-    md = paper_dir / "paper.md"
-    if not md.exists():
-        return {"ok": False, "error": "paper.md missing"}
-    out = paper_dir / "image-map.txt"
-    result = subprocess.run(
-        [sys.executable, str(MAP_SCRIPT), "-m", str(md), "-o", str(out)],
-        capture_output=True, text=True, timeout=120,
-    )
-    return {
-        "ok": result.returncode == 0,
-        "error": result.stderr.strip() if result.returncode != 0 else None,
-    }
-
-
-def clean_orphan_images(paper_dir: Path):
-    """Remove JPGs in images/ not referenced by image-map.txt or paper.md."""
-    md_path = paper_dir / "paper.md"
-    map_path = paper_dir / "image-map.txt"
-    img_dir = paper_dir / "images"
-    if not img_dir.is_dir():
-        return
-
-    mapped = set()
-    if map_path.exists():
-        for line in map_path.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#"):
-                fname = line.split("\u2192", 1)[0].strip()
-                if fname:
-                    mapped.add(fname)
-
-    md_refs = set()
-    if md_path.exists():
-        md_refs = set(MD_IMAGE_RE.findall(md_path.read_text()))
-
-    for f in list(img_dir.glob("*.jpg")):
-        if f.name not in mapped and f.name not in md_refs:
-            f.unlink()
-
-
 def write_manifest(parsed_dir: Path, progress: dict):
     """Write manifest.json summarizing the run."""
     files = progress.get("files", {})
@@ -235,11 +186,12 @@ async def process_one(
             paper_dir.mkdir(parents=True, exist_ok=True)
             save_result = save_paper_output(paper_dir, resp["data"])
 
-            img_map_result = generate_image_map(paper_dir)
-            if not img_map_result["ok"]:
-                elapsed_str = f"{elapsed:.1f}s (image-map failed: {img_map_result['error']})"
+            # Finalize in-process: image-map (non-fatal on failure) + orphan
+            # cleanup; orphans are kept when paper.md references them.
+            finalize_output(name, parsed_dir, parsed_dir)
+            if not (paper_dir / "image-map.txt").exists():
+                elapsed_str = f"{elapsed:.1f}s (no image-map)"
             else:
-                clean_orphan_images(paper_dir)
                 elapsed_str = f"{elapsed:.1f}s"
 
             async with progress_lock:

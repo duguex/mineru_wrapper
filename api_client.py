@@ -19,6 +19,8 @@ from pathlib import Path
 
 import httpx
 
+from finalize import finalize_output
+
 
 def main():
     parser = argparse.ArgumentParser(description="minerU API client")
@@ -72,12 +74,20 @@ def main():
         print("Request failed", file=sys.stderr)
         sys.exit(1)
 
-    # Save results for each PDF
+    # Save results for each PDF, finalize to the canonical subtree
+    # (in-process image-map + orphan cleanup), then write the manifest.
     results_dict = result.get("results", {})
+    papers_rows = []
     for pdf in pdfs:
         file_results = results_dict.get(pdf.stem, {})
         if not file_results:
             print(f"  No result for {pdf.name}", file=sys.stderr)
+            papers_rows.append({
+                "name": pdf.stem,
+                "pdf_path": str(pdf.resolve()),
+                "paper_md": str(output_dir / pdf.stem / "paper.md"),
+                "status": "failed",
+            })
             continue
 
         paper_dir = output_dir / pdf.stem
@@ -97,6 +107,38 @@ def main():
                 data = base64.b64decode(b64data.split(",", 1)[-1])
                 (img_dir / name).write_bytes(data)
             print(f"  {pdf.name}: {len(images)} images")
+
+        finalize_output(pdf.stem, output_dir, output_dir)
+        if not (paper_dir / "image-map.txt").exists():
+            print(f"  {pdf.name}: (no image-map)")
+        paper_md = paper_dir / "paper.md"
+        papers_rows.append({
+            "name": pdf.stem,
+            "pdf_path": str(pdf.resolve()),
+            "paper_md": str(paper_md),
+            "status": "parsed" if paper_md.exists() else "failed",
+        })
+
+    n_ok = sum(1 for e in papers_rows if e["status"] == "parsed")
+    manifest = {
+        "settings": {
+            "source": [str(p) for p in args.paths],
+            "output_dir": str(output_dir),
+            "url": base_url,
+            "use_async": args.use_async,
+        },
+        "summary": {
+            "total": len(papers_rows),
+            "done": n_ok,
+            "failed": len(papers_rows) - n_ok,
+            "pending": 0,
+        },
+        "papers": papers_rows,
+    }
+    manifest_path = output_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    print(f"\nManifest: {manifest_path}")
+    print(f"Done: {n_ok} parsed, {len(papers_rows) - n_ok} failed")
 
 
 def submit_sync(base_url: str, pdfs: list[Path], args) -> dict | None:

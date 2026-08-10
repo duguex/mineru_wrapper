@@ -46,7 +46,7 @@ python3 map_mineru_images.py -m <paper.md> -o image-map.txt
 
 ## Architecture
 
-Two scripts with a one-way dependency: `mineru_wrapper.py` calls `map_mineru_images.py` as a subprocess.
+Three parse paths (CLI `mineru_wrapper.py`, router `batch_parse.py`, HTTP `api_client.py`) share one post-processing module: `finalize.py` imports `map_mineru_images.py` and runs image-map generation in-process.
 
 **`mineru_wrapper.py`** — entry point. Single `main()` function that flows:
 
@@ -54,10 +54,12 @@ Two scripts with a one-way dependency: `mineru_wrapper.py` calls `map_mineru_ima
 2. **Skip filter** — drop any PDF that already has `output_dir/parsed/<name>/paper.md`, unless `--force`. The same rule applies whether one or many PDFs are passed.
 3. **Staging** — symlink each PDF into a `TemporaryDirectory` as `<derived_name>.pdf`. minerU honours its input filename when naming output dirs, so without this step a PDF like `Foo - 2020 - bar.pdf` would land in `Foo_-_2020_-_bar/auto/` while the wrapper looks under `Foo_2020_bar/auto/`.
 4. **Env bootstrap** (`run_mineru`) — sources `~/mineru-cuda/mineru-cuda-env.sh`, pins `CUDA_VISIBLE_DEVICES` to the requested GPU, sets `MINERU_API_MAX_CONCURRENT_REQUESTS=1`, then shells out to `conda run -n mineru mineru -p <staged-tmpdir> -o <output> -b pipeline -m auto -l en`. Accepts a `gpu` parameter (default `"0"`). When `--gpus 0,1` is passed (multi-GPU machines only), papers are split evenly across GPUs (round-robin) and run in parallel via `ThreadPoolExecutor`. On failure, retries any PDFs whose `auto/` dir is missing.
-5. **Post-processing** — for each paper: `generate_image_map` (subprocess to `map_mineru_images.py`) then `standardize_output`.
+5. **Post-processing** — for each paper: `finalize_output` (from `finalize.py`) relocates the raw tree, generates `image-map.txt` in-process, and drops orphan images.
 6. **Manifest** — always written to `<output>/parsed/manifest.json` with per-paper `{name, pdf_path, paper_md, status}`.
 
-**`standardize_output(name, raw_parent, target_dir)`** moves minerU's `raw_parent/<name>/auto/{<name>.md, images/, image-map.txt, junk}` to `target_dir/<name>/{paper.md, images/, image-map.txt}`, then deletes any image in `images/` that is referenced by neither `image-map.txt` nor `paper.md`. `paper.md` is the source of truth: real figures appear as `![](images/<hash>.jpg)`, equations as `$…$` LaTeX, tables as inline `<table>…</table>`. JPGs minerU extracted but paper.md doesn't reference are duplicates of one of the structured forms and are dropped. Finally `rmtree`s `auto/` whole and removes the raw wrapper dir only when it differs from `paper_dir`. Same logic handles both single-PDF layout (raw_parent ≠ target_dir) and batch layout (raw_parent == target_dir).
+**`finalize.py: finalize_output(name, src_tree, target_root)`** — the shared finalizer. Raw arrival (minerU's `src_tree/<name>/auto/`) moves `{<name>.md, images/}` to `target_root/<name>/{paper.md, images/}`, generates `image-map.txt` in-process via `build_image_map`, drops the auxiliary junk, and removes the raw wrapper when it differs from the target. Final arrival (batch/HTTP trees already at `target_root/<name>/`) only generates the map if missing and drops orphan images. Idempotent; image-map failure is non-fatal (degrades to no map — the orphan filter then keeps anything `paper.md` references).
+
+The orphan filter deletes any image in `images/` that is referenced by neither `image-map.txt` nor `paper.md`; the decision lives in the pure `orphan_jpgs(images_dir, map_path, md_path)`. `paper.md` is the source of truth: real figures appear as `![](images/<hash>.jpg)`, equations as `$…$` LaTeX, tables as inline `<table>…</table>`. JPGs minerU extracted but paper.md doesn't reference are duplicates of one of the structured forms and are dropped. Same logic handles both layouts via arrival detection on `auto/`.
 
 `derive_name` (filename → clean alphanumeric key) is the one small utility worth knowing; shell command strings use stdlib `shlex.quote`.
 
@@ -70,7 +72,7 @@ Algorithm:
 - Images without a detectable caption inherit the previous figure's base label — they join the right group as `(b)`, `(c)`, … instead of being dumped into a separate bucket.
 - After every ref has a base label, consecutive items sharing one are grouped: a run of ≥2 becomes `(a)`, `(b)`, `(c)` …; singletons keep the bare base label (no `(a)`). Groups ≥27 use double letters (`(aa)`, `(ab)`, … through `(zz)`); naïve `chr(ord('a')+i)` would overflow into control characters (i=36 produces `U+0085 NEXT LINE`, which Python's `splitlines()` treats as a line break and corrupts `image-map.txt`).
 - Refs that appear before any caption at all (rare) fall back to `FIG. ??`.
-- Images extracted by minerU but never embedded in `paper.md` are deleted from `images/` by `standardize_output` — these are duplicates of content paper.md already expresses structurally (LaTeX formulas, markdown tables).
+- Images extracted by minerU but never embedded in `paper.md` are deleted from `images/` by the finalizer (`finalize.py`) — these are duplicates of content paper.md already expresses structurally (LaTeX formulas, markdown tables).
 
 ## Known limitations
 
@@ -183,7 +185,7 @@ watch -n 10 python3 batch_status.py /mnt/shared/batch_out/parsed/
 
 Features:
 - Sends one PDF per `/file_parse` request, concurrent via asyncio Semaphore
-- Saves `paper.md` + `images/` from API response, then runs `map_mineru_images.py` + orphan cleanup
+- Saves `paper.md` + `images/` from API response, then finalizes in-process via `finalize.py` (image-map + orphan cleanup)
 - Maintains `progress.json` checkpoint — Ctrl+C safe, re-run to resume
 - Failed PDFs retried with exponential backoff (configurable `--max-retries`, `--retry-delay`)
 - Writes `manifest.json` on completion
@@ -210,65 +212,15 @@ See `bench_results.md`. Optimal config: router, 2 GPUs, concurrency=2 per worker
 
 There is no automated test suite. Validate changes manually using these recipes — the `paper_example` corpus is the canonical fixture. Set `PAPER_EXAMPLE=<path>` and substitute in the commands below.
 
-### 1. Dry-run unit test for `standardize_output` (no GPU, ~1 s)
+### 1. Unit test for `finalize.py` (no GPU, ~1 s)
 
-The output-move logic has fine-grained edge cases (single vs batch layout, idempotent re-runs, missing `auto/`, orphan-image filtering). This harness exercises them against a mocked minerU output tree:
+The finalizer's edge cases (raw vs final arrival, idempotent re-runs, missing `auto/`, orphan-image filtering) are covered by a real test file:
 
 ```bash
-python3 - <<'PY'
-import sys, shutil
-from pathlib import Path
-sys.path.insert(0, ".")
-from mineru_wrapper import standardize_output
+python3 test_finalize.py
+```
 
-def make(parent, name):
-    """Mock the minerU auto/ layout."""
-    auto = parent / name / "auto"
-    auto.mkdir(parents=True)
-    (auto / f"{name}.md").write_text("# Mock\n\n![](images/xyz.jpg)\n")
-    (auto / "image-map.txt").write_text("abc.jpg  →  FIG. 1\n")
-    for suffix in ("_layout.pdf", "_origin.pdf", "_span.pdf",
-                   "_middle.json", "_model.json", "_content_list_v2.json"):
-        (auto / f"{name}{suffix}").write_bytes(b"junk")
-    (auto / "images").mkdir()
-    (auto / "images" / "abc.jpg").write_bytes(b"jpg")     # in image-map → kept
-    (auto / "images" / "xyz.jpg").write_bytes(b"jpg")     # in paper.md → kept
-    (auto / "images" / "orphan.jpg").write_bytes(b"jpg")  # in neither → dropped
-
-import tempfile
-with tempfile.TemporaryDirectory() as td:
-    td = Path(td)
-
-    # Single mode: raw_parent ≠ target_dir → raw wrapper is removed
-    make(td / "single", "demo")
-    r = standardize_output("demo", td / "single", td / "single" / "parsed")
-    imgs = td / "single" / "parsed" / "demo" / "images"
-    assert r.exists() and r.name == "paper.md"
-    assert (imgs / "abc.jpg").exists(), "image-map'd jpg should survive"
-    assert (imgs / "xyz.jpg").exists(), "paper.md-referenced jpg should survive"
-    assert not (imgs / "orphan.jpg").exists(), "orphan jpg should be filtered"
-    assert not (td / "single" / "demo").exists(), "raw wrapper should be gone"
-
-    # Batch mode: raw_parent == target_dir → wrapper survives, auto/ doesn't
-    make(td / "batch", "demo")
-    r = standardize_output("demo", td / "batch", td / "batch")
-    imgs = td / "batch" / "demo" / "images"
-    assert r.exists()
-    assert (imgs / "abc.jpg").exists() and (imgs / "xyz.jpg").exists()
-    assert not (imgs / "orphan.jpg").exists()
-    assert not (td / "batch" / "demo" / "auto").exists()
-
-    # Idempotent re-run: another minerU output landing on top should work
-    make(td / "batch", "demo")
-    standardize_output("demo", td / "batch", td / "batch")
-    assert (td / "batch" / "demo" / "paper.md").exists()
-
-    # Missing auto/ → None, no crash
-    (td / "missing" / "ghost").mkdir(parents=True)
-    assert standardize_output("ghost", td / "missing", td / "missing" / "parsed") is None
-
-print("dry-run OK")
-PY
+It promotes the old dry-run heredoc and adds final-mode (batch/HTTP arrival) cases plus the pure `orphan_jpgs` decision.
 ```
 
 ### 2. End-to-end smoke test (~90 s for the smallest PDF)
@@ -313,7 +265,7 @@ Expect: `Done: 2 parsed, 0 failed, 0 skipped`, two paper dirs under `parsed/`, o
 
 | Change | Tests to run |
 |---|---|
-| `standardize_output` body | Dry-run (1), then smoke (2) |
+| `finalize.py` body | Unit test (1), then smoke (2) |
 | `main()` / CLI / skip | Smoke (2) + skip (3) |
 | `collect_pdfs` / argparse | Skip (3) + batch (4) |
 | `map_mineru_images.py` | Smoke (2) and inspect resulting `image-map.txt` |
@@ -408,7 +360,7 @@ pkill -9 -f "conda run.*mineru"
 
 ### 8. Manifest schema
 
-`mineru_wrapper.py` writes `status: "parsed"`; `batch_parse.py` writes `status: "done"`. Normalize to one (`done`) when merging. Always include `summary: {total, done, failed, pending}` at the top level for quick scans.
+`mineru_wrapper.py` and `api_client.py` write `status: "parsed"`; `batch_parse.py` writes `status: "done"`. Normalize to one (`done`) when merging. Always include `summary: {total, done, failed, pending}` at the top level for quick scans.
 
 ### 9. Checklist (copy-paste)
 

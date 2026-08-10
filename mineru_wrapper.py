@@ -16,15 +16,15 @@ For batch (2+ PDFs), also writes <output>/parsed/manifest.json.
 import argparse
 import json
 import os
-import re
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
+
+from finalize import finalize_output
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -90,25 +90,6 @@ def run_mineru(input_path: Path, output_dir: Path, gpu: str = "0") -> bool:
     return True
 
 
-def generate_image_map(parsed_name: str, parsed_dir: Path) -> dict:
-    """Run map_mineru_images.py on paper.md to produce image→figure mapping."""
-    map_script = Path(__file__).resolve().parent / "map_mineru_images.py"
-    md_file = parsed_dir / "auto" / f"{parsed_name}.md"
-    if not md_file.exists():
-        md_file = parsed_dir / "auto" / "paper.md"
-    if not md_file.exists():
-        return {"success": False, "error": f"No .md found in {parsed_dir}/auto/"}
-
-    image_map = parsed_dir / "auto" / "image-map.txt"
-    result = subprocess.run(
-        [sys.executable, str(map_script), "-m", str(md_file), "-o", str(image_map)],
-        capture_output=True, text=True, timeout=60,
-    )
-    return {
-        "success": result.returncode == 0,
-        "error": result.stderr.strip() if result.returncode != 0 else None,
-    }
-
 def collect_pdfs(paths: list[str]) -> list[tuple[str, str]]:
     """Resolve paths to (name, abs_path) for every PDF found.
 
@@ -132,89 +113,6 @@ def collect_pdfs(paths: list[str]) -> list[tuple[str, str]]:
         else:
             print(f"Warning: {p} is not a PDF file or directory, skipping", file=sys.stderr)
     return pdfs
-
-
-def standardize_output(name: str, raw_parent: Path, target_dir: Path) -> Path | None:
-    """Move minerU output from raw_parent/<name>/auto/ to target_dir/<name>/.
-
-    minerU writes <name>/auto/<name>.md + images/ + image-map.txt + a pile
-    of auxiliary _layout.pdf / _middle.json / _model.json / _origin.pdf /
-    _span.pdf / _content_list*.json files. This function:
-
-      * renames <name>.md → paper.md
-      * moves images/ and image-map.txt up one level into target_dir/<name>/
-      * rmtree's the entire auto/ directory (everything left is junk)
-      * removes the raw_parent/<name>/ wrapper if it differs from
-        target_dir/<name>/ and is now empty (single mode cleanup)
-
-    Single mode: raw_parent ≠ target_dir → raw wrapper gets removed.
-    Batch mode:  raw_parent == target_dir → paper_dir is the raw wrapper,
-                 so the final rmdir is skipped.
-
-    Returns the final paper.md path, or None if minerU produced no output.
-    """
-    auto_dir = raw_parent / name / "auto"
-    if not auto_dir.is_dir():
-        return None
-    paper_dir = target_dir / name
-    paper_dir.mkdir(parents=True, exist_ok=True)
-
-    # 1. Move the markdown (renamed to paper.md). minerU produces a single
-    # <name>.md; glob+first-hit guards against future variants.
-    md_src = next(iter(auto_dir.glob("*.md")), None)
-    if md_src is not None:
-        md_dst = paper_dir / "paper.md"
-        md_dst.unlink(missing_ok=True)
-        shutil.move(str(md_src), str(md_dst))
-
-    # 2. Move images/ (replace any existing copy).
-    src_images = auto_dir / "images"
-    if src_images.is_dir():
-        dst_images = paper_dir / "images"
-        if dst_images.exists():
-            shutil.rmtree(str(dst_images))
-        shutil.move(str(src_images), str(dst_images))
-
-    # 3. Move image-map.txt (generated earlier by map_mineru_images.py).
-    src_map = auto_dir / "image-map.txt"
-    if src_map.exists():
-        dst_map = paper_dir / "image-map.txt"
-        dst_map.unlink(missing_ok=True)
-        shutil.move(str(src_map), str(dst_map))
-
-    # 4. Drop orphan images: any jpg in images/ that is referenced by
-    #    neither image-map.txt nor paper.md. These are formula/equation
-    #    renderings that paper.md already represents as LaTeX. Re-enabled
-    #    in this commit after 504c915 fixed the extract_base priority bug
-    #    that previously caused real figures to be misclassified as orphans.
-    dst_md = paper_dir / "paper.md"
-    dst_map = paper_dir / "image-map.txt"
-    dst_images = paper_dir / "images"
-    if dst_images.is_dir():
-        mapped = set()
-        if dst_map.exists():
-            for line in dst_map.read_text().splitlines():
-                if line and not line.startswith("#"):
-                    fname = line.split("→", 1)[0].strip()
-                    if fname:
-                        mapped.add(fname)
-        md_refs = set()
-        if dst_md.exists():
-            md_refs = set(re.findall(r'\(images/(\S+\.jpg)', dst_md.read_text()))
-        for f in list(dst_images.glob("*.jpg")):
-            if f.name not in mapped and f.name not in md_refs:
-                f.unlink()
-
-    # 5. Everything still in auto/ is minerU auxiliary output — drop it.
-    shutil.rmtree(str(auto_dir), ignore_errors=True)
-
-    # 6. Single mode: remove the now-empty raw wrapper. Batch mode skips
-    # this because raw_root and paper_dir are the same directory.
-    raw_root = raw_parent / name
-    if raw_root != paper_dir and raw_root.is_dir() and not any(raw_root.iterdir()):
-        raw_root.rmdir()
-
-    return paper_dir / "paper.md"
 
 
 def main():
@@ -306,13 +204,13 @@ def main():
                     except Exception as e:
                         print(f"  GPU {gpu} failed: {e}", file=sys.stderr)
 
-    # Post-processing
+    # Post-processing — one finalizer relocates minerU's raw tree, generates
+    # image-map.txt in-process, drops orphan images, and clears auxiliary junk.
     print("\nPost-processing...")
     for name, _ in papers:
         raw_dir = output_dir / name
-        if raw_dir.is_dir():
-            generate_image_map(name, raw_dir)
-            standardize_output(name, output_dir, output_dir / "parsed")
+        if (raw_dir / "auto").is_dir():
+            finalize_output(name, output_dir, output_dir / "parsed")
 
     elapsed = time.time() - t0
 
