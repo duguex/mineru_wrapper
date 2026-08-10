@@ -18,7 +18,7 @@ and `mineru-router` for multi-GPU load balancing when more than one GPU is prese
 python3 ~/mineru_wrapper/mineru_wrapper.py paper.pdf -o /tmp/out
 
 # API (single GPU)
-~/mineru_wrapper/deploy_api.sh --host 127.0.0.1 --worker-conc 1
+~/mineru_wrapper/deploy.sh api --host 127.0.0.1 --worker-conc 1
 
 # Client
 pip install httpx

@@ -8,17 +8,9 @@ Type=simple
 User=YOUR_USER
 Group=YOUR_USER
 
-# Environment
-Environment=MINERU_ROUTER_HOST=0.0.0.0
-Environment=MINERU_ROUTER_PORT=8002
-Environment=MINERU_API_MAX_CONCURRENT_REQUESTS=2
-Environment=MINERU_API_OUTPUT_ROOT=/mnt/shared/mineru_api_output
-Environment=MINERU_API_ENABLE_FASTAPI_DOCS=0
-Environment=CUDA_VISIBLE_DEVICES=0
-Environment=MINERU_ROUTER_LOCAL_GPUS=0
-
-# ExecStart
-ExecStart=/home/YOUR_USER/mineru_wrapper/deploy_router.sh
+# deploy.sh router auto-detects GPUs; on a single-GPU host that resolves to 0.
+# Pin explicitly via Environment=MINERU_ROUTER_LOCAL_GPUS=0,1 when needed.
+ExecStart=/home/YOUR_USER/mineru_wrapper/deploy.sh router
 
 # Restart
 Restart=on-failure

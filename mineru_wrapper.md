@@ -35,13 +35,13 @@ scheduling decides which GPU to use (typically GPU 0).
 
 ```bash
 # Manual start (foreground)
-~/mineru_wrapper/deploy_api.sh
+~/mineru_wrapper/deploy.sh api
 
 # Custom port or concurrency
-~/mineru_wrapper/deploy_api.sh --port 8000 --worker-conc 4
+~/mineru_wrapper/deploy.sh api --port 8000 --worker-conc 4
 
 # Localhost only
-~/mineru_wrapper/deploy_api.sh --host 127.0.0.1
+~/mineru_wrapper/deploy.sh api --host 127.0.0.1
 
 # Systemd service (persistent)
 sudo cp ~/mineru_wrapper/mineru-api.service /etc/systemd/system/
@@ -59,13 +59,13 @@ Recommended for throughput (see benchmark below).
 
 ```bash
 # Manual start (foreground)
-~/mineru_wrapper/deploy_router.sh
+~/mineru_wrapper/deploy.sh router
 
 # Custom port or per-worker concurrency
-~/mineru_wrapper/deploy_router.sh --port 8002 --worker-conc 2
+~/mineru_wrapper/deploy.sh router --port 8002 --worker-conc 2
 
 # Localhost only
-~/mineru_wrapper/deploy_router.sh --host 127.0.0.1
+~/mineru_wrapper/deploy.sh router --host 127.0.0.1
 
 # Systemd service (persistent)
 sudo cp ~/mineru_wrapper/mineru-router.service /etc/systemd/system/
@@ -80,7 +80,7 @@ vs single-GPU sequential, zero failures. See [bench_results.md](bench_results.md
 
 ## Choosing Between Modes
 
-| Aspect | Single API (`deploy_api.sh`) | Router (`deploy_router.sh`) |
+| Aspect | Single API (`deploy.sh api`) | Router (`deploy.sh router`) |
 |--------|------------------------------|----------------------------|
 | GPUs used | 1 (GPU 0) | auto-detect via `nvidia-smi` (or `MINERU_ROUTER_LOCAL_GPUS`) |
 | Throughput | baseline on 1× V100 | only useful with ≥2 GPUs |

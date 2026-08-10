@@ -84,7 +84,7 @@ Algorithm:
 
 ### CUDA / deployment (this host)
 
-- **1× Tesla V100-PCIE-32GB.** Prefer `deploy_api.sh` (single process). `deploy_router.sh` auto-detects GPU count via `nvidia-smi` (no longer hard-codes `0,1`).
+- **1× Tesla V100-PCIE-32GB.** Prefer `deploy.sh api` (single process). `deploy.sh router` auto-detects GPU count via `nvidia-smi`.
 - **VRAM contention:** ollama often occupies most of the 32GB. Free VRAM before batch runs, or keep `--worker-conc 1` / `MINERU_API_MAX_CONCURRENT_REQUESTS=1`.
 - **Backend:** always `pipeline` for reliability. hybrid/vlm need extra VRAM and usually vLLM — not the default path on V100.
 - **Stack:** conda env `mineru` = torch 2.12.1+cu126 + mineru 3.4.x. Do **not** install official cu130 wheels (no sm_70 kernels on V100). Env script unsets `HIP_VISIBLE_DEVICES` / `ROCM_HOME` so old ROCm settings do not leak in.
@@ -139,14 +139,14 @@ On NVIDIA, `mineru-router` isolates workers with `CUDA_VISIBLE_DEVICES` alone �
 
 **Single V100 (recommended):**
 ```bash
-nohup bash deploy_api.sh --host 127.0.0.1 --worker-conc 1 &
+python3 daemonize.py bash deploy.sh api --host 127.0.0.1 --worker-conc 1
 curl -s http://127.0.0.1:8001/health
 ```
 
 **Multi-GPU router** (only when `nvidia-smi -L` shows >1 GPU):
 ```bash
-nohup bash deploy_router.sh --host 127.0.0.1 --worker-conc 2 &
-# or force: MINERU_ROUTER_LOCAL_GPUS=0,1 bash deploy_router.sh ...
+python3 daemonize.py bash deploy.sh router --host 127.0.0.1 --worker-conc 2
+# or force: MINERU_ROUTER_LOCAL_GPUS=0,1 python3 daemonize.py bash deploy.sh router ...
 curl -s http://127.0.0.1:8002/health | python3 -c "
 import json, sys; h=json.load(sys.stdin)
 for s in h['servers']: print(f'{s[\"server_id\"]} gpu={s[\"gpu\"]} healthy={s[\"healthy\"]}')
@@ -200,7 +200,7 @@ For small batches or single PDFs, use `mineru_wrapper.py` directly — no router
 |----------|------|---------|
 | Single PDF | `mineru_wrapper.py` | `mineru_wrapper.py paper.pdf` |
 | Small batch (≤20) | `mineru_wrapper.py` | `mineru_wrapper.py dir/ --gpus 0,1` |
-| Large batch (100+) | router + `batch_parse.py` | `deploy_router.sh` + `batch_parse.py` |
+| Large batch (100+) | router + `batch_parse.py` | `deploy.sh router` + `batch_parse.py` |
 | Remote / API access | `api_client.py` | `python3 api_client.py paper.pdf http://<host>:<port>` |
 
 ### Benchmark results
@@ -308,7 +308,7 @@ Lessons from the historical 13,076-PDF run (47 h, 100% success on 2× Vega 20 RO
 
 - Read `CLAUDE.md` "Known limitations" and "GPU Concurrency" sections — past failures are documented.
 - Free GPU memory: ollama often holds ~24GB; leave room for mineru pipeline models.
-- Use `deploy_api.sh` on single GPU; `deploy_router.sh` only if multiple NVIDIA GPUs are present.
+- Use `deploy.sh api` on single GPU; `deploy.sh router` only if multiple NVIDIA GPUs are present.
 
 ### 1. Small-batch test first
 
@@ -325,8 +325,8 @@ A 20-PDF test takes ~5 min and prevents 47-hour mistakes.
 | Scale | Tool | Why |
 |---|---|---|
 | <20 PDFs | `mineru_wrapper.py` | No daemon, no router overhead |
-| 20–200 (1 GPU) | `deploy_api.sh` + `batch_parse.py --concurrency 1` | Single V100 safe path |
-| multi-GPU only | `deploy_router.sh` + `batch_parse.py` | Dynamic least-loaded scheduling |
+| 20–200 (1 GPU) | `deploy.sh api` + `batch_parse.py --concurrency 1` | Single V100 safe path |
+| multi-GPU only | `deploy.sh router` + `batch_parse.py` | Dynamic least-loaded scheduling |
 | 1000+ | Same, with progress checkpoint | Resume on crash is mandatory |
 
 Router's load formula: `score = (queued + processing + pending) / max_concurrent` — always picks the least-loaded healthy worker, randomized among ties. Far better than round-robin.
@@ -335,11 +335,10 @@ Router's load formula: `score = (queued + processing + pending) / max_concurrent
 
 **Always use `daemonize.py` (double-fork)**, not `nohup`/`setsid`/`disown`. Bash tool timeouts, SSH drops, and Ctrl+C all kill process groups; only double-fork detaches fully.
 
-Wrapper pattern for any long-running job:
+Server comes up first — as a systemd unit, or for a one-off manually:
 ```bash
-# run_batch.sh: pkill old, start API, wait health, daemonize worker
-python3 daemonize.py bash deploy_api.sh --host 127.0.0.1 --worker-conc 1
-# ... wait for /health on :8001 ...
+# systemd owns the API server; daemonize only the batch worker:
+sudo systemctl start mineru-api      # system-scope unit (see mineru_wrapper.md)
 python3 daemonize.py python3 batch_parse.py --src ... --url http://127.0.0.1:8001 --concurrency 1
 ```
 
@@ -348,7 +347,7 @@ python3 daemonize.py python3 batch_parse.py --src ... --url http://127.0.0.1:800
 - **Do not install cu130 torch wheels** — V100 (sm_70) is dropped from those builds; use cu126.
 - **Watch free VRAM** — with ollama running, keep concurrency at 1.
 - **Unset HIP/ROCm env** — `mineru-cuda-env.sh` does this; avoid sourcing archived `~/archive/mineru-rocm/mineru-rocm-env.sh` on this host.
-- **Never `exec` in manually-launched deploy scripts** — kills server on parent shell exit. Reserve `exec` for systemd (`deploy_api.sh` uses `exec` intentionally for systemd).
+- **`deploy.sh` always `exec`s the server** — in the foreground the terminal owns it; under systemd the unit owns it. Don't background `deploy.sh` from a shell that then exits (the exec'd server dies with it) — use the unit or `daemonize.py`.
 
 ### 5. Per-PDF failure handling
 
@@ -386,8 +385,7 @@ All three writers (`mineru_wrapper.py`, `batch_parse.py`, `api_client.py`) share
 ```
 [ ] Read CLAUDE.md and bench_results.md
 [ ] 20-PDF smoke test (router + batch_parse)
-[ ] deploy_router.sh uses --local-gpus=0,1 (not auto)
-[ ] deploy_router.sh has no `exec`
+[ ] deploy.sh router uses --local-gpus=0,1 (not auto); deploy.sh api for single GPU
 [ ] router + batch_parse both daemonized via daemonize.py
 [ ] progress.json checkpointed after each PDF
 [ ] batch_status.py running in another terminal
