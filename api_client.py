@@ -11,11 +11,9 @@ Usage:
 The server should use the `pipeline` backend (recommended on V100; hybrid/vlm need extra VRAM/vLLM).
 """
 import argparse
+import asyncio
 import json
-import shutil
 import sys
-import time
-import uuid
 from pathlib import Path
 
 import httpx
@@ -29,6 +27,14 @@ from bookkeeping import (
     paper_status,
 )
 from finalize import finalize_output
+from parse_client import (
+    ParseClientError,
+    fetch_result_async,
+    file_parse_sync,
+    parse_params,
+    poll_task_async,
+    submit_task_async,
+)
 
 
 def main():
@@ -106,13 +112,15 @@ def main():
 
     print(f"Processing {len(to_send)} PDF(s) in one batch...", flush=True)
 
-    if args.use_async:
-        result = submit_async(base_url, to_send, args)
-    else:
-        result = submit_sync(base_url, to_send, args)
-
-    if result is None:
-        print("Request failed", file=sys.stderr)
+    params = parse_params(lang=args.lang, formula=not args.no_formula,
+                          table=not args.no_table)
+    try:
+        if args.use_async:
+            result = asyncio.run(_async_parse(base_url, to_send, params))
+        else:
+            result = file_parse_sync(base_url, to_send, params)
+    except ParseClientError as e:
+        print(f"Request failed: {e}", file=sys.stderr)
         sys.exit(1)
 
     # Save results for each PDF, finalize to the canonical subtree
@@ -180,104 +188,18 @@ def _write_manifest(output_dir: Path, manifest: dict):
     print(f"\nManifest: {manifest_path}")
 
 
-def submit_sync(base_url: str, pdfs: list[Path], args) -> dict | None:
-    """Use synchronous /file_parse endpoint (batch all PDFs in one request)."""
-    url = f"{base_url}/file_parse"
-    files = []
-    for pdf in pdfs:
-        f = open(pdf, "rb")
-        files.append(("files", (pdf.name, f, "application/pdf")))
-    data = {
-        "backend": "pipeline",
-        "parse_method": "auto",
-        "lang_list": [args.lang],
-        "formula_enable": str(not args.no_formula).lower(),
-        "table_enable": str(not args.no_table).lower(),
-        "return_md": "true",
-        "return_images": "true",
-    }
-    try:
-        resp = httpx.post(url, files=files, data=data, timeout=600)
-    except Exception as e:
-        print(f"  Request failed: {e}", file=sys.stderr)
-        return None
-    finally:
-        for _, (_, fh, _) in files:
-            fh.close()
+async def _async_parse(base_url: str, pdfs: list[Path], params: dict) -> dict:
+    """Full /tasks flow — submit, poll to a terminal status, fetch the result.
 
-    if resp.status_code != 200:
-        print(f"  Server error {resp.status_code}: {resp.text[:200]}", file=sys.stderr)
-        return None
-
-    return resp.json()
-
-
-def submit_async(base_url: str, pdfs: list[Path], args) -> dict | None:
-    """Use async /tasks endpoint (batch all PDFs in one request)."""
-    submit_url = f"{base_url}/tasks"
-    files = []
-    for pdf in pdfs:
-        f = open(pdf, "rb")
-        files.append(("files", (pdf.name, f, "application/pdf")))
-    data = {
-        "backend": "pipeline",
-        "parse_method": "auto",
-        "lang_list": [args.lang],
-        "formula_enable": str(not args.no_formula).lower(),
-        "table_enable": str(not args.no_table).lower(),
-        "return_md": "true",
-        "return_images": "true",
-    }
-    try:
-        resp = httpx.post(submit_url, files=files, data=data, timeout=120)
-    except Exception as e:
-        print(f"  Submit failed: {e}", file=sys.stderr)
-        return None
-    finally:
-        for _, (_, fh, _) in files:
-            fh.close()
-
-    if resp.status_code != 202:
-        print(f"  Submit error {resp.status_code}: {resp.text[:200]}", file=sys.stderr)
-        return None
-
-    payload = resp.json()
-    task_id = payload["task_id"]
-    status_url = payload["status_url"]
-    result_url = payload["result_url"]
-
-    # Poll until done
-    deadline = time.time() + 600
-    while time.time() < deadline:
-        try:
-            sr = httpx.get(status_url, timeout=30)
-        except Exception as e:
-            print(f"  Status poll failed: {e}", file=sys.stderr)
-            time.sleep(2)
-            continue
-        if sr.status_code != 200:
-            time.sleep(2)
-            continue
-        st = sr.json().get("status")
-        print(f"  Status: {st}", flush=True)
-        if st in ("completed", "failed"):
-            break
-        time.sleep(2)
-    else:
-        print("  Timed out waiting for task", file=sys.stderr)
-        return None
-
-    # Fetch result
-    try:
-        rr = httpx.get(result_url, timeout=120)
-    except Exception as e:
-        print(f"  Result fetch failed: {e}", file=sys.stderr)
-        return None
-
-    if rr.status_code == 200:
-        return rr.json()
-    print(f"  Result error {rr.status_code}", file=sys.stderr)
-    return None
+    A terminal 'failed' status still fetches the result payload so per-file
+    failures land in the manifest (matches the pre-parse_client behavior);
+    only a poll deadline raises.
+    """
+    async with httpx.AsyncClient() as client:
+        status_url, result_url = await submit_task_async(
+            client, base_url, pdfs, params)
+        await poll_task_async(client, status_url)
+        return await fetch_result_async(client, result_url)
 
 
 if __name__ == "__main__":

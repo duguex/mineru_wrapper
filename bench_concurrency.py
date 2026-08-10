@@ -15,31 +15,19 @@ from pathlib import Path
 
 import httpx
 
+from parse_client import ParseClientError, file_parse_async, parse_params
+
 
 async def submit_one(client: httpx.AsyncClient, base_url: str, pdf_path: Path, idx: int) -> dict:
-    """Send one PDF to the /file_parse endpoint, return timing dict."""
-    url = f"{base_url}/file_parse"
-    pdf_bytes = pdf_path.read_bytes()
-    files = {"files": (pdf_path.name, pdf_bytes, "application/pdf")}
-    data = {
-        "lang": "en",
-        "backend": "pipeline",
-        "parse_method": "auto",
-    }
-
+    """Send one PDF to the /file_parse endpoint via the shared parse client."""
     t0 = time.monotonic()
     try:
-        resp = await client.post(url, files=files, data=data, timeout=600)
-    except Exception as e:
+        await file_parse_async(client, base_url, [pdf_path], parse_params())
+        elapsed = time.monotonic() - t0
+        return {"idx": idx, "ok": True, "elapsed": elapsed}
+    except ParseClientError as e:
         elapsed = time.monotonic() - t0
         return {"idx": idx, "ok": False, "elapsed": elapsed, "error": str(e)}
-
-    elapsed = time.monotonic() - t0
-
-    if resp.status_code != 200:
-        return {"idx": idx, "ok": False, "elapsed": elapsed, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
-
-    return {"idx": idx, "ok": True, "elapsed": elapsed}
 
 
 async def run_bench(pdf_dir: str, base_url: str, concurrency: int) -> dict:
@@ -59,7 +47,7 @@ async def run_bench(pdf_dir: str, base_url: str, concurrency: int) -> dict:
 
     results: list[dict] = [None] * len(pdfs)
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(600.0)) as client:
+    async with httpx.AsyncClient() as client:
         t_start = time.monotonic()
 
         async def worker(pdf: Path, idx: int) -> None:

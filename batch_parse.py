@@ -40,6 +40,17 @@ from bookkeeping import (
     paper_row,
 )
 from finalize import finalize_output
+from parse_client import (
+    TIMEOUTS,
+    ParseClientError,
+    file_parse_async,
+    parse_params,
+)
+
+# Long unattended jobs use the table's batch budget; connect stays tight so a
+# dead server is noticed quickly (a bare float would widen connect to the
+# full parse budget).
+BATCH_PARSE_TIMEOUT = httpx.Timeout(TIMEOUTS["parse_batch"], connect=30.0)
 
 
 def load_progress(parsed_dir: Path) -> dict:
@@ -81,32 +92,6 @@ def update_file_state(progress: dict, name: str, updates: dict):
     files = progress.setdefault("files", {})
     entry = files.setdefault(name, {"status": "pending", "retries": 0})
     entry.update(updates)
-
-
-async def submit_one(
-    client: httpx.AsyncClient,
-    base_url: str,
-    pdf_path: Path,
-) -> dict:
-    """POST a PDF to /file_parse, return the JSON response or error dict."""
-    url = f"{base_url}/file_parse"
-    try:
-        with open(pdf_path, "rb") as fh:
-            files_data = {"files": (pdf_path.name, fh, "application/pdf")}
-            data = {
-                "backend": "pipeline",
-                "parse_method": "auto",
-                "lang_list": ["en"],
-                "return_md": "true",
-                "return_images": "true",
-            }
-            resp = await client.post(url, files=files_data, data=data)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-    if resp.status_code == 200:
-        return {"ok": True, "data": resp.json()}
-    return {"ok": False, "error": f"HTTP {resp.status_code}: {resp.text[:300]}"}
 
 
 def save_paper_output(paper_dir: Path, response_data: dict) -> dict:
@@ -180,6 +165,7 @@ async def process_one(
     stats_lock: asyncio.Lock,
     max_retries: int,
     retry_delay: float,
+    params: dict,
 ):
     """Process a single PDF: submit → save → image-map → clean → checkpoint."""
     name = derive_name(str(pdf_path))
@@ -189,12 +175,17 @@ async def process_one(
     while retry <= max_retries:
         t0 = time.monotonic()
 
-        resp = await submit_one(client, base_url, pdf_path)
+        try:
+            data = await file_parse_async(
+                client, base_url, [pdf_path], params, timeout=BATCH_PARSE_TIMEOUT)
+            ok, error = True, None
+        except ParseClientError as e:
+            ok, error = False, str(e)
 
-        if resp["ok"]:
+        if ok:
             elapsed = time.monotonic() - t0
             paper_dir.mkdir(parents=True, exist_ok=True)
-            save_result = save_paper_output(paper_dir, resp["data"])
+            save_result = save_paper_output(paper_dir, data)
 
             # Finalize in-process: image-map (non-fatal on failure) + orphan
             # cleanup; orphans are kept when paper.md references them.
@@ -229,11 +220,11 @@ async def process_one(
                 seq = stats["ok"] + stats["failed"] + 1
             print(
                 f"  [{seq:>5}/{progress['total']}] {name}  RETRY {retry}/{max_retries} "
-                f"({resp['error'][:80]})  waiting {wait:.0f}s...",
+                f"({error[:80]})  waiting {wait:.0f}s...",
                 flush=True,
             )
             async with progress_lock:
-                update_file_state(progress, name, {"retries": retry, "error": resp["error"]})
+                update_file_state(progress, name, {"retries": retry, "error": error})
                 save_progress(parsed_dir, progress)
             await asyncio.sleep(wait)
         else:
@@ -241,7 +232,7 @@ async def process_one(
                 update_file_state(progress, name, {
                     "status": "failed",
                     "retries": retry,
-                    "error": resp["error"],
+                    "error": error,
                 })
                 progress["completed"] = progress.get("completed", 0) + 1
                 save_progress(parsed_dir, progress)
@@ -250,8 +241,8 @@ async def process_one(
                 stats["failed"] += 1
                 seq = stats["ok"] + stats["failed"]
             print(
-                f"  [{seq:>5}/{progress['total']}] {name}  FAILED (after {retries} retries): "
-                f"{resp['error'][:120]}",
+                f"  [{seq:>5}/{progress['total']}] {name}  FAILED (after {retry} retries): "
+                f"{error[:120]}",
                 flush=True,
             )
             return
@@ -264,6 +255,7 @@ async def run_batch(
     concurrency: int,
     max_retries: int,
     retry_delay: float,
+    params: dict,
 ):
     """Main batch processing loop."""
     src_dir = src_dir.resolve()
@@ -341,13 +333,12 @@ async def run_batch(
             await process_one(
                 client, base_url, pdf_path, parsed_dir,
                 progress, progress_lock, stats, stats_lock,
-                max_retries, retry_delay,
+                max_retries, retry_delay, params,
             )
 
     t_start = time.monotonic()
-    timeout = httpx.Timeout(900.0, connect=30.0)
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient() as client:
         tasks = [asyncio.create_task(bounded(p)) for p in pending]
         await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -386,6 +377,9 @@ def main():
                         help="Max retries per PDF (default: 3)")
     parser.add_argument("--retry-delay", type=float, default=15.0,
                         help="Base retry delay seconds, multiplied by attempt (default: 15)")
+    parser.add_argument("--lang", default="en", help="OCR language (default: en)")
+    parser.add_argument("--no-formula", action="store_true", help="Disable formula parsing")
+    parser.add_argument("--no-table", action="store_true", help="Disable table parsing")
     args = parser.parse_args()
 
     src_dir = Path(args.src)
@@ -401,6 +395,8 @@ def main():
             run_batch(
                 src_dir, parsed_dir, args.url.rstrip("/"),
                 args.concurrency, args.max_retries, args.retry_delay,
+                parse_params(lang=args.lang, formula=not args.no_formula,
+                             table=not args.no_table),
             )
         )
     except KeyboardInterrupt:

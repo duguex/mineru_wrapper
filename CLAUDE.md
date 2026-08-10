@@ -47,7 +47,7 @@ python3 map_mineru_images.py -m <paper.md> -o image-map.txt
 
 ## Architecture
 
-Three parse paths (CLI `mineru_wrapper.py`, router `batch_parse.py`, HTTP `api_client.py`) share two modules: `finalize.py` (post-processing: layout, image-map, orphan filter) and `bookkeeping.py` (identity: derived name, skip key, manifest schema). Both import `map_mineru_images.py` where relevant — image-map generation is in-process, no subprocess seam.
+Three parse paths (CLI `mineru_wrapper.py`, router `batch_parse.py`, HTTP `api_client.py`) share three modules: `finalize.py` (post-processing: layout, image-map, orphan filter), `bookkeeping.py` (identity: derived name, skip key, manifest schema), and `parse_client.py` (the `/file_parse` and `/tasks` wire protocols — one parameter set, one timeout table, typed `ParseClientError`). `api_client.py` and `batch_parse.py` both submit through `parse_client`; image-map generation is in-process, no subprocess seam.
 
 **`mineru_wrapper.py`** — entry point. Single `main()` function that flows:
 
@@ -185,7 +185,7 @@ watch -n 10 python3 batch_status.py /mnt/shared/batch_out/parsed/
 ```
 
 Features:
-- Sends one PDF per `/file_parse` request, concurrent via asyncio Semaphore
+- Sends one PDF per `/file_parse` request, concurrent via asyncio Semaphore, with `--lang`/`--no-formula`/`--no-table` toggles (same parameter set as `api_client.py`)
 - Saves `paper.md` + `images/` from API response, then finalizes in-process via `finalize.py` (image-map + orphan cleanup)
 - Maintains `progress.json` checkpoint — Ctrl+C safe, re-run to resume; already-finalized papers (glossary skip key) are recorded as `skipped` and never re-queued
 - Failed PDFs retried with exponential backoff (configurable `--max-retries`, `--retry-delay`)
@@ -230,6 +230,14 @@ python3 test_bookkeeping.py
 ```
 
 Covers `derive_name` transforms, the skip-key artifact check, and manifest summary computation.
+
+### 1c. Unit test for `parse_client.py` (no GPU, <1 s)
+
+```bash
+python3 test_parse_client.py
+```
+
+Drives both wire protocols (`/file_parse`, `/tasks` submit/poll/fetch) through `httpx.MockTransport` — params shape, non-2xx error paths, poll retry, deadline timeout.
 ```
 
 ### 2. End-to-end smoke test (~90 s for the smallest PDF)
@@ -275,6 +283,8 @@ Expect: `Done: 2 parsed, 0 failed, 0 skipped`, two paper dirs under `parsed/`, o
 | Change | Tests to run |
 |---|---|
 | `finalize.py` body | Unit test (1), then smoke (2) |
+| `bookkeeping.py` body | Unit test (1b) |
+| `parse_client.py` body | Unit test (1c) |
 | `main()` / CLI / skip | Smoke (2) + skip (3) |
 | `collect_pdfs` / argparse | Skip (3) + batch (4) |
 | `map_mineru_images.py` | Smoke (2) and inspect resulting `image-map.txt` |
