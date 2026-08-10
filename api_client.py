@@ -6,6 +6,7 @@ Usage:
     python3 api_client.py a.pdf b.pdf http://<server>:<port> -o /tmp/out
     python3 api_client.py dir/ http://<server>:<port>
     python3 api_client.py dir/ extra.pdf http://<server>:<port> --async
+    python3 api_client.py dir/ http://<server>:<port> --force   # re-parse parsed/
 
 The server should use the `pipeline` backend (recommended on V100; hybrid/vlm need extra VRAM/vLLM).
 """
@@ -19,6 +20,14 @@ from pathlib import Path
 
 import httpx
 
+from bookkeeping import (
+    derive_name,
+    is_skipped,
+    manifest_payload,
+    paper_md_path,
+    paper_row,
+    paper_status,
+)
 from finalize import finalize_output
 
 
@@ -28,6 +37,8 @@ def main():
     parser.add_argument("url", help="Server base URL (e.g. http://<server>:<port>)")
     parser.add_argument("-o", "--output", default="./parsed",
                         help="Output directory (default: ./parsed)")
+    parser.add_argument("--force", action="store_true",
+                        help="Re-parse already-processed PDFs")
     parser.add_argument("--async", dest="use_async", action="store_true",
                         help="Use async /tasks endpoint instead of sync /file_parse")
     parser.add_argument("--lang", default="en", help="OCR language (default: en)")
@@ -37,22 +48,32 @@ def main():
 
     base_url = args.url.rstrip("/")
 
-    # Collect PDFs from all paths
+    # Collect PDFs from all paths. Dedupe twice: by resolved path and by derived
+    # name — two files collapsing to one key would clobber each other.
     pdfs = []
-    seen = set()
+    seen_paths = set()
+    seen_names = set()
+
+    def _add(path: Path):
+        abspath = str(path.resolve())
+        if abspath in seen_paths:
+            return
+        name = derive_name(str(path))
+        if name in seen_names:
+            print(f"Warning: {path.name} collides with another PDF's derived "
+                  f"name ({name}), skipping", file=sys.stderr)
+            return
+        seen_paths.add(abspath)
+        seen_names.add(name)
+        pdfs.append(path)
+
     for p in args.paths:
         path = Path(p)
         if path.is_file() and path.suffix.lower() == ".pdf":
-            abspath = str(path.resolve())
-            if abspath not in seen:
-                pdfs.append(path)
-                seen.add(abspath)
+            _add(path)
         elif path.is_dir():
             for f in sorted(path.glob("*.pdf")) + sorted(path.glob("*.PDF")):
-                abspath = str(f.resolve())
-                if abspath not in seen:
-                    pdfs.append(f)
-                    seen.add(abspath)
+                _add(f)
         else:
             print(f"Warning: {p} is not a PDF or directory, skipping", file=sys.stderr)
 
@@ -63,12 +84,32 @@ def main():
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Processing {len(pdfs)} PDF(s) in one batch...", flush=True)
+    # Glossary skip key: an existing artifact is default-skipped unless --force.
+    to_send = []
+    rows = []
+    for pdf in pdfs:
+        name = derive_name(str(pdf))
+        if not args.force and is_skipped(output_dir, name):
+            print(f"  SKIP  {name}: {pdf}")
+            rows.append(paper_row(
+                name, str(pdf.resolve()),
+                str(paper_md_path(output_dir, name)),
+                paper_status(paper_md_path(output_dir, name), skipped=True)))
+        else:
+            to_send.append(pdf)
+
+    if not to_send:
+        print("All PDFs already parsed. Use --force to re-parse.")
+        manifest = manifest_payload(_api_settings(base_url, args), rows)
+        _write_manifest(output_dir, manifest)
+        return
+
+    print(f"Processing {len(to_send)} PDF(s) in one batch...", flush=True)
 
     if args.use_async:
-        result = submit_async(base_url, pdfs, args)
+        result = submit_async(base_url, to_send, args)
     else:
-        result = submit_sync(base_url, pdfs, args)
+        result = submit_sync(base_url, to_send, args)
 
     if result is None:
         print("Request failed", file=sys.stderr)
@@ -77,20 +118,20 @@ def main():
     # Save results for each PDF, finalize to the canonical subtree
     # (in-process image-map + orphan cleanup), then write the manifest.
     results_dict = result.get("results", {})
-    papers_rows = []
-    for pdf in pdfs:
+    for pdf in to_send:
+        name = derive_name(str(pdf))
+        # Server result keys = uploaded filename stem (we upload pdf.name);
+        # our output key = derived name. Bind the two explicitly here.
         file_results = results_dict.get(pdf.stem, {})
         if not file_results:
             print(f"  No result for {pdf.name}", file=sys.stderr)
-            papers_rows.append({
-                "name": pdf.stem,
-                "pdf_path": str(pdf.resolve()),
-                "paper_md": str(output_dir / pdf.stem / "paper.md"),
-                "status": "failed",
-            })
+            rows.append(paper_row(
+                name, str(pdf.resolve()),
+                str(paper_md_path(output_dir, name)),
+                paper_status(paper_md_path(output_dir, name))))
             continue
 
-        paper_dir = output_dir / pdf.stem
+        paper_dir = output_dir / name
         paper_dir.mkdir(parents=True, exist_ok=True)
 
         md_content = file_results.get("md_content")
@@ -103,42 +144,40 @@ def main():
             import base64
             img_dir = paper_dir / "images"
             img_dir.mkdir(exist_ok=True)
-            for name, b64data in images.items():
+            for img_name, b64data in images.items():
                 data = base64.b64decode(b64data.split(",", 1)[-1])
-                (img_dir / name).write_bytes(data)
+                (img_dir / img_name).write_bytes(data)
             print(f"  {pdf.name}: {len(images)} images")
 
-        finalize_output(pdf.stem, output_dir, output_dir)
+        finalize_output(name, output_dir, output_dir)
         if not (paper_dir / "image-map.txt").exists():
             print(f"  {pdf.name}: (no image-map)")
         paper_md = paper_dir / "paper.md"
-        papers_rows.append({
-            "name": pdf.stem,
-            "pdf_path": str(pdf.resolve()),
-            "paper_md": str(paper_md),
-            "status": "parsed" if paper_md.exists() else "failed",
-        })
+        rows.append(paper_row(
+            name, str(pdf.resolve()), str(paper_md), paper_status(paper_md)))
 
-    n_ok = sum(1 for e in papers_rows if e["status"] == "parsed")
-    manifest = {
-        "settings": {
-            "source": [str(p) for p in args.paths],
-            "output_dir": str(output_dir),
-            "url": base_url,
-            "use_async": args.use_async,
-        },
-        "summary": {
-            "total": len(papers_rows),
-            "done": n_ok,
-            "failed": len(papers_rows) - n_ok,
-            "pending": 0,
-        },
-        "papers": papers_rows,
+    manifest = manifest_payload(_api_settings(base_url, args), rows)
+    _write_manifest(output_dir, manifest)
+    summary = manifest["summary"]
+    print(f"Done: {summary['parsed']} parsed, {summary['failed']} failed, "
+          f"{summary['skipped']} skipped")
+
+
+def _api_settings(base_url: str, args) -> dict:
+    """Run settings recorded in the manifest."""
+    return {
+        "source": [str(p) for p in args.paths],
+        "output_dir": str(Path(args.output)),
+        "url": base_url,
+        "use_async": args.use_async,
+        "force": args.force,
     }
+
+
+def _write_manifest(output_dir: Path, manifest: dict):
     manifest_path = output_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
     print(f"\nManifest: {manifest_path}")
-    print(f"Done: {n_ok} parsed, {len(papers_rows) - n_ok} failed")
 
 
 def submit_sync(base_url: str, pdfs: list[Path], args) -> dict | None:

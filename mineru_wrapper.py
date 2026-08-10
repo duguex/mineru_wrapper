@@ -24,25 +24,19 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from bookkeeping import (
+    derive_name,
+    is_skipped,
+    manifest_payload,
+    paper_md_path,
+    paper_row,
+    paper_status,
+)
 from finalize import finalize_output
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def derive_name(pdf_path: str) -> str:
-    """Derive a clean paper key from a PDF filename.
-
-    Strips extension, replaces non-alphanumeric with underscores,
-    collapses consecutive underscores, strips leading/trailing ones.
-    """
-    name = Path(pdf_path).stem
-    name = "".join(c if c.isalnum() else "_" for c in name)
-    while "__" in name:
-        name = name.replace("__", "_")
-    name = name.strip("_")
-    return name if name else "unnamed"
-
 
 def mineru_available() -> bool:
     """Check whether the minerU conda env exists."""
@@ -115,6 +109,28 @@ def collect_pdfs(paths: list[str]) -> list[tuple[str, str]]:
     return pdfs
 
 
+def _write_manifest(parsed_dir: Path, all_pdfs: list, processed_set: set,
+                    args) -> dict:
+    """Build and write the run manifest via bookkeeping (one schema)."""
+    rows = []
+    for n, p in all_pdfs:
+        paper_md = paper_md_path(parsed_dir, n)
+        rows.append(paper_row(
+            n, p, str(paper_md),
+            paper_status(paper_md, skipped=(n, p) not in processed_set),
+        ))
+    manifest = manifest_payload({
+        "source": args.pdfs,
+        "output_dir": str(args.output),
+        "force": args.force,
+    }, rows)
+    path = parsed_dir / "manifest.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(manifest, f, indent=2)
+    return manifest
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="minerU wrapper — parse PDFs with automated CUDA env and output standardization"
@@ -141,9 +157,10 @@ def main():
     output_dir = Path(args.output)
     t0 = time.time()
 
-    # Skip already-parsed unless --force.
+    # Skip already-parsed unless --force (glossary skip key).
+    parsed_dir = output_dir / "parsed"
     papers = [(n, p) for n, p in all_pdfs
-              if args.force or not (output_dir / "parsed" / n / "paper.md").exists()]
+              if args.force or not is_skipped(parsed_dir, n)]
     papers_set = set(papers)
     skipped = [(n, p) for n, p in all_pdfs if (n, p) not in papers_set]
     for n, p in skipped:
@@ -151,6 +168,7 @@ def main():
 
     if not papers:
         print("All PDFs already parsed. Use --force to re-parse.")
+        _write_manifest(parsed_dir, all_pdfs, set(), args)
         return
 
     # Run minerU — stage PDFs as symlinks under derived names so minerU's
@@ -215,32 +233,15 @@ def main():
     elapsed = time.time() - t0
 
     # Always write manifest (single-PDF runs also benefit from a failure
-    # record that survives the process exit).
-    manifest = {
-        "settings": {
-            "source": args.pdfs,
-            "output_dir": str(output_dir),
-            "force": args.force,
-        },
-        "papers": [
-            {
-                "name": n,
-                "pdf_path": p,
-                "paper_md": str(output_dir / "parsed" / n / "paper.md"),
-                "status": "parsed" if (output_dir / "parsed" / n / "paper.md").exists() else "failed",
-            }
-            for n, p in papers
-        ],
-    }
-    manifest_path = output_dir / "parsed" / "manifest.json"
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(manifest_path, "w") as f:
-        json.dump(manifest, f, indent=2)
-    n_ok = sum(1 for e in manifest["papers"] if e["status"] == "parsed")
-    n_fail = len(manifest["papers"]) - n_ok
+    # record that survives the process exit). One schema via bookkeeping:
+    # processed rows are parsed/failed, skipped rows are recorded as skipped.
+    manifest = _write_manifest(parsed_dir, all_pdfs, papers_set, args)
+    manifest_path = parsed_dir / "manifest.json"
+    summary = manifest["summary"]
 
     print(f"\nManifest: {manifest_path}")
-    print(f"Done: {n_ok} parsed, {n_fail} failed, {len(skipped)} skipped ({elapsed:.0f}s)")
+    print(f"Done: {summary['parsed']} parsed, {summary['failed']} failed, "
+          f"{summary['skipped']} skipped ({elapsed:.0f}s)")
     # Friendly path printout for the common single-PDF case.
     if len(papers) == 1:
         name = papers[0][0]

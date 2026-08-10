@@ -39,13 +39,16 @@ def main():
     total = len(files)
     done_entries = {k: v for k, v in files.items() if v.get("status") == "done"}
     failed_entries = {k: v for k, v in files.items() if v.get("status") == "failed"}
+    skipped_entries = {k: v for k, v in files.items() if v.get("status") == "skipped"}
     pending_entries = {k: v for k, v in files.items() if v.get("status") == "pending"}
     done = len(done_entries)
     failed = len(failed_entries)
+    skipped = len(skipped_entries)
     pending = len(pending_entries)
     completed = done + failed
+    processed = completed + skipped
 
-    pct = (completed / total * 100) if total > 0 else 0
+    pct = (processed / total * 100) if total > 0 else 0
 
     started_at = progress.get("started_at", "?")
     updated_at = progress.get("updated_at", "?")
@@ -60,7 +63,7 @@ def main():
     if elapsed > 0 and completed > 0:
         rate = completed / elapsed
         if rate > 0:
-            remaining = (total - completed) / rate
+            remaining = (total - processed) / rate
             eta = fmt_duration(remaining)
         else:
             eta = "?"
@@ -74,7 +77,7 @@ def main():
 
     # Progress bar
     bar_width = 40
-    filled = int(bar_width * completed / total) if total > 0 else 0
+    filled = int(bar_width * processed / total) if total > 0 else 0
     bar = "\u2588" * filled + "\u2591" * (bar_width - filled)
 
     print()
@@ -86,6 +89,7 @@ def main():
     print(f"  Total:    {total}")
     print(f"  Done:     {done}")
     print(f"  Failed:   {failed}")
+    print(f"  Skipped:  {skipped}")
     print(f"  Pending:  {pending}")
     print()
     print(f"  Elapsed:  {fmt_duration(elapsed)}")

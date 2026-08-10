@@ -32,6 +32,13 @@ from pathlib import Path
 
 import httpx
 
+from bookkeeping import (
+    derive_name,
+    is_skipped,
+    manifest_payload,
+    paper_md_path,
+    paper_row,
+)
 from finalize import finalize_output
 
 
@@ -52,16 +59,16 @@ def save_progress(parsed_dir: Path, progress: dict):
 
 
 def list_pending(src_dir: Path, progress: dict, max_retries: int) -> list[Path]:
-    """Return PDFs that are not yet successfully processed or permanently failed."""
+    """Return PDFs to submit: not done, not skipped, not permanently failed."""
     all_pdfs = sorted(src_dir.glob("*.pdf")) + sorted(src_dir.glob("*.PDF"))
     files_state = progress.get("files", {})
     pending = []
     for pdf in all_pdfs:
-        name = pdf.stem
+        name = derive_name(str(pdf))
         st = files_state.get(name, {})
         status = st.get("status", "pending")
         retries = st.get("retries", 0)
-        if status == "done":
+        if status in ("done", "skipped"):
             continue
         if status == "failed" and retries >= max_retries:
             continue
@@ -126,34 +133,37 @@ def save_paper_output(paper_dir: Path, response_data: dict) -> dict:
 
 
 def write_manifest(parsed_dir: Path, progress: dict):
-    """Write manifest.json summarizing the run."""
+    """Write manifest.json summarizing the run (glossary status vocabulary)."""
     files = progress.get("files", {})
-    manifest = {
-        "settings": {
-            "source_dir": progress.get("source_dir", "?"),
-            "output_dir": str(parsed_dir),
-            "started_at": progress.get("started_at", "?"),
-            "updated_at": progress.get("updated_at", "?"),
-        },
-        "summary": {
-            "total": progress.get("total", 0),
-            "done": sum(1 for e in files.values() if e.get("status") == "done"),
-            "failed": sum(1 for e in files.values() if e.get("status") == "failed"),
-            "pending": sum(1 for e in files.values() if e.get("status") == "pending"),
-        },
-        "papers": [
-            {
-                "name": name,
-                "status": entry.get("status"),
-                "paper_md": str(parsed_dir / name / "paper.md"),
-                "time": entry.get("time"),
-                "images": entry.get("images_count"),
-                "error": entry.get("error"),
-                "retries": entry.get("retries"),
-            }
-            for name, entry in sorted(files.items())
-        ],
-    }
+    rows = []
+    for name, entry in sorted(files.items()):
+        # progress.json speaks its own transient vocabulary; the manifest
+        # speaks the glossary. Anything that never produced an artifact —
+        # including entries still "pending" because an exception was
+        # swallowed — is failed, so summary always sums to total.
+        st = entry.get("status", "pending")
+        if st == "done":
+            status = "parsed"
+        elif st == "skipped":
+            status = "skipped"
+        else:
+            status = "failed"
+        rows.append(paper_row(
+            name,
+            entry.get("pdf_path", "?"),
+            str(paper_md_path(parsed_dir, name)),
+            status,
+            time=entry.get("time"),
+            images=entry.get("images_count"),
+            error=entry.get("error"),
+            retries=entry.get("retries"),
+        ))
+    manifest = manifest_payload({
+        "source_dir": progress.get("source_dir", "?"),
+        "output_dir": str(parsed_dir),
+        "started_at": progress.get("started_at", "?"),
+        "updated_at": progress.get("updated_at", "?"),
+    }, rows)
     (parsed_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2)
     )
@@ -172,7 +182,7 @@ async def process_one(
     retry_delay: float,
 ):
     """Process a single PDF: submit → save → image-map → clean → checkpoint."""
-    name = pdf_path.stem
+    name = derive_name(str(pdf_path))
     paper_dir = parsed_dir / name
     retry = progress.get("files", {}).get(name, {}).get("retries", 0)
 
@@ -262,40 +272,62 @@ async def run_batch(
 
     progress = load_progress(parsed_dir)
     all_pdfs = sorted(src_dir.glob("*.pdf")) + sorted(src_dir.glob("*.PDF"))
+    # Dedupe by derived name, mirroring the wrapper's collect_pdfs: two files
+    # collapsing to one key would clobber each other's output.
+    seen_names = set()
+    deduped = []
+    for pdf in all_pdfs:
+        name = derive_name(str(pdf))
+        if name in seen_names:
+            print(f"Warning: {pdf.name} collides with another PDF's derived "
+                  f"name ({name}), skipping", file=sys.stderr)
+            continue
+        seen_names.add(name)
+        deduped.append(pdf)
+    all_pdfs = deduped
 
     for pdf in all_pdfs:
-        name = pdf.stem
+        name = derive_name(str(pdf))
         if name not in progress.get("files", {}):
-            update_file_state(progress, name, {"status": "pending", "retries": 0})
+            update_file_state(progress, name, {
+                "status": "pending", "retries": 0, "pdf_path": str(pdf),
+            })
+
+    # Glossary skip key: an existing artifact means already parsed. A paper
+    # already "done" by this batch keeps its state (history preserved); any
+    # other paper with an artifact is recorded as skipped and never re-queued.
+    for pdf in all_pdfs:
+        name = derive_name(str(pdf))
+        if is_skipped(parsed_dir, name) and \
+                progress.get("files", {}).get(name, {}).get("status") != "done":
+            update_file_state(progress, name, {"status": "skipped"})
 
     progress.setdefault("source_dir", str(src_dir))
     progress.setdefault("output_dir", str(parsed_dir))
     progress.setdefault("server_url", base_url)
     progress.setdefault("started_at", datetime.now(timezone.utc).isoformat())
     progress["total"] = len(all_pdfs)
-    progress["completed"] = sum(
-        1 for e in progress.get("files", {}).values() if e.get("status") == "done"
-    )
     save_progress(parsed_dir, progress)
 
     pending = list_pending(src_dir, progress, max_retries)
-    done_count = progress["completed"]
+    files = progress.get("files", {})
+    done_count = sum(1 for e in files.values() if e.get("status") == "done")
     fail_count = sum(
-        1 for e in progress.get("files", {}).values()
-        if e.get("status") == "failed"  and e.get("retries", 0) >= max_retries
+        1 for e in files.values()
+        if e.get("status") == "failed" and e.get("retries", 0) >= max_retries
     )
-    skip_count = done_count + fail_count
+    skipped_count = sum(1 for e in files.values() if e.get("status") == "skipped")
 
     print(f"Source:   {src_dir}")
     print(f"Output:   {parsed_dir}")
     print(f"Server:   {base_url}")
     print(f"Total:    {len(all_pdfs)}  Done: {done_count}  Failed: {fail_count}  "
-          f"Pending: {len(pending)}")
+          f"Skipped: {skipped_count}  Pending: {len(pending)}")
     print(f"Concurrency: {concurrency}  Max retries: {max_retries}")
     print()
 
     if not pending:
-        print("All PDFs processed.")
+        print("All PDFs processed (or skipped by artifact).")
         write_manifest(parsed_dir, progress)
         return
 
@@ -327,10 +359,13 @@ async def run_batch(
     final_failed = sum(
         1 for e in progress.get("files", {}).values() if e.get("status") == "failed"
     )
+    final_skipped = sum(
+        1 for e in progress.get("files", {}).values() if e.get("status") == "skipped"
+    )
 
     print()
-    print(f"Done:    {final_done} parsed, {final_failed} failed "
-          f"({elapsed_total:.0f}s total, "
+    print(f"Done:    {final_done} parsed, {final_failed} failed, "
+          f"{final_skipped} skipped ({elapsed_total:.0f}s total, "
           f"{len(pending) / elapsed_total:.3f} req/s)")
     write_manifest(parsed_dir, progress)
 

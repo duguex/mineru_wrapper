@@ -12,6 +12,7 @@ A minerU FastAPI server is available at a configurable LAN address.
 - POST PDFs to `/file_parse` with `backend=pipeline`, `lang_list=["en"]`
 - OpenAPI docs at `/docs`
 - Client script: `python3 api_client.py paper.pdf http://<server>:<port>`
+- `api_client.py -o` IS the parsed root (its `manifest.json` lands at `<out>/manifest.json`, and paper dirs at `<out>/<name>/`); the CLI wrapper's `-o` is the output root with `parsed/` inside. Same manifest schema either way.
 
 For external access, forward a public port to this internal address.
 
@@ -46,7 +47,7 @@ python3 map_mineru_images.py -m <paper.md> -o image-map.txt
 
 ## Architecture
 
-Three parse paths (CLI `mineru_wrapper.py`, router `batch_parse.py`, HTTP `api_client.py`) share one post-processing module: `finalize.py` imports `map_mineru_images.py` and runs image-map generation in-process.
+Three parse paths (CLI `mineru_wrapper.py`, router `batch_parse.py`, HTTP `api_client.py`) share two modules: `finalize.py` (post-processing: layout, image-map, orphan filter) and `bookkeeping.py` (identity: derived name, skip key, manifest schema). Both import `map_mineru_images.py` where relevant — image-map generation is in-process, no subprocess seam.
 
 **`mineru_wrapper.py`** — entry point. Single `main()` function that flows:
 
@@ -61,7 +62,7 @@ Three parse paths (CLI `mineru_wrapper.py`, router `batch_parse.py`, HTTP `api_c
 
 The orphan filter deletes any image in `images/` that is referenced by neither `image-map.txt` nor `paper.md`; the decision lives in the pure `orphan_jpgs(images_dir, map_path, md_path)`. `paper.md` is the source of truth: real figures appear as `![](images/<hash>.jpg)`, equations as `$…$` LaTeX, tables as inline `<table>…</table>`. JPGs minerU extracted but paper.md doesn't reference are duplicates of one of the structured forms and are dropped. Same logic handles both layouts via arrival detection on `auto/`.
 
-`derive_name` (filename → clean alphanumeric key) is the one small utility worth knowing; shell command strings use stdlib `shlex.quote`.
+**`bookkeeping.py`** — the one owner of the glossary's identity and state concepts. `derive_name(pdf_path)` (filename → clean alphanumeric key) decides output dirs and the skip key everywhere; `paper_md_path(parsed_dir, name)` / `is_skipped(parsed_dir, name)` implement the skip key (`parsed/<name>/paper.md` exists → default skip, all three paths); `manifest_payload(settings, rows)` is the single manifest schema — rows use the glossary status vocabulary {parsed, failed, skipped} and the summary is computed, so the three writers cannot drift. Shell command strings use stdlib `shlex.quote`.
 
 **`map_mineru_images.py`** — reads `paper.md` (minerU's structured Markdown), finds all `![](...)` image references, and extracts figure/table labels from the surrounding text. Produces `image-map.txt` with one line per image: `<hash>.jpg  →  FIG. 1(a)`.
 
@@ -186,7 +187,7 @@ watch -n 10 python3 batch_status.py /mnt/shared/batch_out/parsed/
 Features:
 - Sends one PDF per `/file_parse` request, concurrent via asyncio Semaphore
 - Saves `paper.md` + `images/` from API response, then finalizes in-process via `finalize.py` (image-map + orphan cleanup)
-- Maintains `progress.json` checkpoint — Ctrl+C safe, re-run to resume
+- Maintains `progress.json` checkpoint — Ctrl+C safe, re-run to resume; already-finalized papers (glossary skip key) are recorded as `skipped` and never re-queued
 - Failed PDFs retried with exponential backoff (configurable `--max-retries`, `--retry-delay`)
 - Writes `manifest.json` on completion
 - `batch_status.py` shows progress bar, ETA, throughput, recent failures
@@ -221,6 +222,14 @@ python3 test_finalize.py
 ```
 
 It promotes the old dry-run heredoc and adds final-mode (batch/HTTP arrival) cases plus the pure `orphan_jpgs` decision.
+
+### 1b. Unit test for `bookkeeping.py` (no GPU, <1 s)
+
+```bash
+python3 test_bookkeeping.py
+```
+
+Covers `derive_name` transforms, the skip-key artifact check, and manifest summary computation.
 ```
 
 ### 2. End-to-end smoke test (~90 s for the smallest PDF)
@@ -360,7 +369,7 @@ pkill -9 -f "conda run.*mineru"
 
 ### 8. Manifest schema
 
-`mineru_wrapper.py` and `api_client.py` write `status: "parsed"`; `batch_parse.py` writes `status: "done"`. Normalize to one (`done`) when merging. Always include `summary: {total, done, failed, pending}` at the top level for quick scans.
+All three writers (`mineru_wrapper.py`, `batch_parse.py`, `api_client.py`) share one schema via `bookkeeping.manifest_payload`: rows use the glossary status vocabulary {parsed, failed, skipped}, and `summary: {total, parsed, failed, skipped}` is computed from the rows at write time. `batch_parse.py`'s internal `progress.json` keeps its own transient vocabulary (done / failed / pending / skipped) — that is the checkpoint's private state, read by `batch_status.py`, and never merged into manifests.
 
 ### 9. Checklist (copy-paste)
 
