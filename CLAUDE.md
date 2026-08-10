@@ -432,3 +432,17 @@ Phys Rev corpus (~30 pages average, mixed text/figures):
 - 2 GPU, 2 workers × conc 3: OOM, throughput drops
 
 12K PDFs ≈ 38–47 hours on the recommended config. Run unattended over a weekend.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues in `duguex/mineru_wrapper`, managed with the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` at the repo root plus `docs/adr/`. See `docs/agents/domain.md`.
